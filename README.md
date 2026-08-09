@@ -6,21 +6,26 @@ instead of shelling out to tools such as `ip`, `ifconfig`, `nmcli`, or `iw`.
 
 ## Current phase
 
-The current milestone adds read-only rtnetlink address monitoring on top of the
-Phase 1/2 snapshot and link-event foundation:
+The current milestone adds the typed connection layer on top of the read-only
+rtnetlink/nl80211 foundation:
 
-- a daemon binary (`nmd`) with non-destructive `links`, `addresses`, and
-  `monitor` commands;
-- a Linux networking abstraction trait for link/address snapshots and typed
-  events;
-- direct rtnetlink link/address enumeration and multicast monitoring;
-- typed link creation, removal, and state-change events;
-- typed IPv4/IPv6 address snapshots and address-added/address-removed events;
-- deterministic parser tests built from synthetic netlink fixtures.
+- a typed [`ConnectionProfile`](src/connection/profile.rs) model for Wi-Fi and
+  Ethernet, validated on construction;
+- a secret-handling boundary so profiles never carry plaintext credentials;
+- deterministic profile storage (in-memory and TOML-file backends behind a
+  `ProfileStore` trait);
+- a strict activation state machine with typed connection events;
+- an `ActivationManager` that picks the best profile for a device, tracks
+  active connections, and delegates the real work to an `ActivationEngine`
+  boundary;
+- a daemon facade (`Daemon`) that coordinates backend, profiles, and activation;
+- deterministic unit tests across the profile, policy, store, secrets, state,
+  activation, and daemon layers.
 
-This phase intentionally does not configure interfaces, manage Wi-Fi, run DHCP,
-change DNS, alter routes, manage VPNs, persist policy, or expose
-NetworkManager-compatible D-Bus APIs yet.
+This phase intentionally does not yet bring connections up or down (the shipped
+`UnsupportedActivationEngine` reports failure honestly), configure interfaces,
+run DHCP, change DNS, alter routes, manage VPNs, or expose
+NetworkManager-compatible D-Bus APIs.
 
 ## Build and test
 
@@ -46,6 +51,7 @@ and prints human-readable events until interrupted with Ctrl-C.
 The daemon should grow around narrow subsystems backed by Linux-native APIs:
 
 - rtnetlink for link/address/route state and changes;
+- nl80211 for Wi-Fi scanning and association;
 - sysfs/ethtool APIs for device metadata;
 - D-Bus for desktop-facing compatibility surfaces;
 - DHCP, DNS, Wi-Fi, VPN, and policy engines as later explicit subsystems.

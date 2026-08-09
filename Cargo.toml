@@ -2,7 +2,7 @@
 name = "network-manager-rs"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.87"
 license = "MIT"
 description = "Linux-native network management daemon foundation"
 
@@ -13,6 +13,11 @@ path = "src/lib.rs"
 [[bin]]
 name = "nmd"
 path = "src/bin/nmd.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+zbus = "5"
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

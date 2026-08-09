@@ -2,6 +2,8 @@ use std::fmt;
 use std::io;
 use std::net::IpAddr;
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 /// Errors surfaced by the Linux netlink backends.
 ///
 /// Malformed protocol data is reported as a controlled [`NetlinkError`] value
@@ -72,11 +74,148 @@ pub struct Address {
     pub prefix_length: u8,
 }
 
+/// Internet protocol family.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+pub enum IpFamily {
+    V4,
+    V6,
+}
+
+impl fmt::Display for IpFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::V4 => "ipv4",
+            Self::V6 => "ipv6",
+        })
+    }
+}
+
+/// Kernel route type (`rtm_type`).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub enum RouteKind {
+    Unicast,
+    Local,
+    Broadcast,
+    Anycast,
+    Multicast,
+    Blackhole,
+    Unreachable,
+    Other(u8),
+}
+
+impl RouteKind {
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Unicast,
+            2 => Self::Local,
+            3 => Self::Broadcast,
+            4 => Self::Anycast,
+            5 => Self::Multicast,
+            6 => Self::Blackhole,
+            7 => Self::Unreachable,
+            other => Self::Other(other),
+        }
+    }
+
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Unicast => 1,
+            Self::Local => 2,
+            Self::Broadcast => 3,
+            Self::Anycast => 4,
+            Self::Multicast => 5,
+            Self::Blackhole => 6,
+            Self::Unreachable => 7,
+            Self::Other(value) => value,
+        }
+    }
+}
+
+impl fmt::Display for RouteKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Unicast => "unicast",
+            Self::Local => "local",
+            Self::Broadcast => "broadcast",
+            Self::Anycast => "anycast",
+            Self::Multicast => "multicast",
+            Self::Blackhole => "blackhole",
+            Self::Unreachable => "unreachable",
+            Self::Other(value) => return write!(f, "other({value})"),
+        })
+    }
+}
+
+/// Kernel route scope (`rtm_scope`).
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+pub enum RouteScope {
+    Universe,
+    Link,
+    Host,
+    Other(u8),
+}
+
+impl RouteScope {
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Universe,
+            253 => Self::Link,
+            254 => Self::Host,
+            other => Self::Other(other),
+        }
+    }
+
+    pub const fn as_u8(self) -> u8 {
+        match self {
+            Self::Universe => 0,
+            Self::Link => 253,
+            Self::Host => 254,
+            Self::Other(value) => value,
+        }
+    }
+}
+
+/// A kernel route snapshot (rtnetlink).
+///
+/// Only routes in the main table with a unicast/blackhole semantics are
+/// reported by the backend; link-local and special kernel routes are filtered
+/// at parse time so higher layers never see raw routing internals.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct Route {
+    pub family: IpFamily,
+    /// The destination network (e.g. `0.0.0.0` for a default route).
+    pub destination: IpAddr,
+    pub prefix_length: u8,
+    pub gateway: Option<IpAddr>,
+    pub output_interface: Option<i32>,
+    pub metric: Option<u32>,
+    pub kind: RouteKind,
+    pub scope: RouteScope,
+}
+
+impl Route {
+    /// Returns whether this is a default route (`0.0.0.0/0` or `::/0`).
+    pub fn is_default(&self) -> bool {
+        self.prefix_length == 0
+            && match (self.family, self.destination) {
+                (IpFamily::V4, IpAddr::V4(address)) => address.is_unspecified(),
+                (IpFamily::V6, IpAddr::V6(address)) => address.is_unspecified(),
+                _ => false,
+            }
+    }
+
+    /// The interface index this route is associated with.
+    pub fn interface_index(&self) -> Option<i32> {
+        self.output_interface
+    }
+}
+
 /// Typed network events emitted by the daemon's event sources.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
     Link(LinkEvent),
     Address(AddressEvent),
+    Route(RouteEvent),
     Wifi(WifiEvent),
 }
 
@@ -103,6 +242,19 @@ pub struct AddressEvent {
 pub enum AddressEventKind {
     Added,
     Removed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RouteEvent {
+    pub kind: RouteEventKind,
+    pub route: Route,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RouteEventKind {
+    Added,
+    Removed,
+    Changed,
 }
 
 /// A blocking source of typed [`NetworkEvent`] values.
@@ -177,11 +329,81 @@ impl Bssid {
 
 impl fmt::Display for Bssid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
-        )
+        f.write_str(&format_mac_address(&self.0))
+    }
+}
+
+/// Formats a 48-bit MAC address as lowercase, colon-separated hex.
+pub fn format_mac_address(bytes: &[u8; 6]) -> String {
+    let mut out = String::with_capacity(17);
+    for (index, byte) in bytes.iter().enumerate() {
+        if index > 0 {
+            out.push(':');
+        }
+        out.push(char::from_digit((byte >> 4) as u32, 16).expect("hex digit"));
+        out.push(char::from_digit((byte & 0x0f) as u32, 16).expect("hex digit"));
+    }
+    out
+}
+
+/// Parses a 48-bit MAC address from colon-separated or contiguous hex.
+pub fn parse_mac_address(input: &str) -> Option<[u8; 6]> {
+    let compact: String = input.chars().filter(|ch| *ch != ':').collect();
+    if compact.len() != 12 {
+        return None;
+    }
+    let bytes = decode_hex(&compact)?;
+    bytes.try_into().ok()
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from_digit((byte >> 4) as u32, 16).expect("hex digit"));
+        out.push(char::from_digit((byte & 0x0f) as u32, 16).expect("hex digit"));
+    }
+    out
+}
+
+fn decode_hex(input: &str) -> Option<Vec<u8>> {
+    if !input.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(input.len() / 2);
+    let mut chars = input.chars();
+    while let (Some(high), Some(low)) = (chars.next(), chars.next()) {
+        out.push((high.to_digit(16)? as u8) << 4 | low.to_digit(16)? as u8);
+    }
+    Some(out)
+}
+
+impl Serialize for Ssid {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&encode_hex(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for Ssid {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let hex = String::deserialize(deserializer)?;
+        let bytes = decode_hex(&hex)
+            .ok_or_else(|| serde::de::Error::custom("invalid ssid hex encoding"))?;
+        Ok(Self(bytes))
+    }
+}
+
+impl Serialize for Bssid {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format_mac_address(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for Bssid {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let input = String::deserialize(deserializer)?;
+        parse_mac_address(&input)
+            .map(Self)
+            .ok_or_else(|| serde::de::Error::custom("invalid bssid"))
     }
 }
 

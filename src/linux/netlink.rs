@@ -11,36 +11,53 @@ use crate::daemon::NetworkBackend;
 use crate::linux::wifi;
 
 pub use crate::linux::model::{
-    Address, AddressEvent, AddressEventKind, Link, LinkEvent, LinkEventKind, LinkFlags,
-    NetlinkError, NetworkEvent, NetworkEventSource,
+    Address, AddressEvent, AddressEventKind, IpFamily, Link, LinkEvent, LinkEventKind, LinkFlags,
+    NetlinkError, NetworkEvent, NetworkEventSource, Route, RouteEvent, RouteEventKind, RouteKind,
+    RouteScope,
 };
 
 pub(crate) const AF_NETLINK: i32 = 16;
 pub(crate) const SOCK_RAW: i32 = 3;
 const NETLINK_ROUTE: i32 = 0;
-const NLM_F_REQUEST: u16 = 0x0001;
-const NLM_F_ROOT: u16 = 0x0100;
-const NLM_F_MATCH: u16 = 0x0200;
-const NLM_F_DUMP: u16 = NLM_F_ROOT | NLM_F_MATCH;
-const NLM_F_CREATE: u16 = 0x0400;
-const RTM_GETLINK: u16 = 18;
-const RTM_NEWLINK: u16 = 16;
-const RTM_DELLINK: u16 = 17;
-const RTM_NEWADDR: u16 = 20;
-const RTM_DELADDR: u16 = 21;
-const RTM_GETADDR: u16 = 22;
+pub(crate) const NLM_F_REQUEST: u16 = 0x0001;
+pub(crate) const NLM_F_ACK: u16 = 0x0004;
+pub(crate) const NLM_F_REPLACE: u16 = 0x0100;
+pub(crate) const NLM_F_ROOT: u16 = 0x0100;
+pub(crate) const NLM_F_MATCH: u16 = 0x0200;
+pub(crate) const NLM_F_EXCL: u16 = 0x0200;
+pub(crate) const NLM_F_DUMP: u16 = NLM_F_ROOT | NLM_F_MATCH;
+pub(crate) const NLM_F_CREATE: u16 = 0x0400;
+pub(crate) const RTM_GETLINK: u16 = 18;
 const NLMSG_DONE: u16 = 3;
 const NLMSG_ERROR: u16 = 2;
 const IFLA_IFNAME: u16 = 3;
-const IFA_ADDRESS: u16 = 1;
-const IFA_LOCAL: u16 = 2;
-const AF_INET: u8 = 2;
-const AF_INET6: u8 = 10;
-const NLMSG_ALIGNTO: usize = 4;
-const RTA_ALIGNTO: usize = 4;
+pub(crate) const IFA_ADDRESS: u16 = 1;
+pub(crate) const IFA_LOCAL: u16 = 2;
+pub(crate) const RTA_DST: u16 = 1;
+pub(crate) const RTA_OIF: u16 = 4;
+pub(crate) const RTA_GATEWAY: u16 = 5;
+pub(crate) const RTA_PRIORITY: u16 = 6;
+pub(crate) const RT_TABLE_MAIN: u8 = 254;
+pub(crate) const RTN_UNICAST: u8 = 1;
+pub(crate) const RTPROT_STATIC: u8 = 4;
+pub(crate) const RT_SCOPE_LINK: u8 = 253;
+pub(crate) const AF_INET: u8 = 2;
+pub(crate) const AF_INET6: u8 = 10;
+pub(crate) const RTM_NEWLINK: u16 = 16;
+pub(crate) const RTM_DELLINK: u16 = 17;
+pub(crate) const RTM_NEWADDR: u16 = 20;
+pub(crate) const RTM_DELADDR: u16 = 21;
+pub(crate) const RTM_GETADDR: u16 = 22;
+pub(crate) const RTM_NEWROUTE: u16 = 24;
+pub(crate) const RTM_DELROUTE: u16 = 25;
+pub(crate) const RTM_GETROUTE: u16 = 26;
+pub(crate) const NLMSG_ALIGNTO: usize = 4;
+pub(crate) const RTA_ALIGNTO: usize = 4;
 const RTMGRP_LINK: u32 = 1;
 const RTMGRP_IPV4_IFADDR: u32 = 0x10;
 const RTMGRP_IPV6_IFADDR: u32 = 0x100;
+const RTMGRP_IPV4_ROUTE: u32 = 0x40;
+const RTMGRP_IPV6_ROUTE: u32 = 0x400;
 const SIGINT: i32 = 2;
 const F_GETFL: i32 = 3;
 const F_SETFL: i32 = 4;
@@ -93,6 +110,20 @@ struct IfAddrMsg {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct RtMsg {
+    rtm_family: u8,
+    rtm_dst_len: u8,
+    rtm_src_len: u8,
+    rtm_tos: u8,
+    rtm_table: u8,
+    rtm_protocol: u8,
+    rtm_scope: u8,
+    rtm_type: u8,
+    rtm_flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct RtAttr {
     rta_len: u16,
     rta_type: u16,
@@ -100,7 +131,7 @@ struct RtAttr {
 
 unsafe extern "C" {
     fn socket(domain: i32, typ: i32, protocol: i32) -> i32;
-    fn bind(sockfd: i32, addr: *const SockAddrNl, addrlen: u32) -> i32;
+    fn bind(sockfd: i32, addr: *const c_void, addrlen: u32) -> i32;
     fn send(sockfd: i32, buf: *const c_void, len: usize, flags: i32) -> isize;
     fn recv(sockfd: i32, buf: *mut c_void, len: usize, flags: i32) -> isize;
     fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
@@ -173,6 +204,10 @@ impl NetworkBackend for RtnetlinkBackend {
         get_addresses()
     }
 
+    fn routes(&self) -> Result<Vec<Route>, NetlinkError> {
+        get_routes()
+    }
+
     fn events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError> {
         Ok(Box::new(open_link_event_source()?))
     }
@@ -228,6 +263,31 @@ pub fn get_links() -> Result<Vec<Link>, NetlinkError> {
     }
 }
 
+pub fn get_routes() -> Result<Vec<Route>, NetlinkError> {
+    let fd = open_route_socket()?;
+    let request = RouteDumpRequest::new(3);
+    send_all(fd.as_raw_fd(), request.as_bytes())?;
+
+    let mut routes = Vec::new();
+    let mut buf = vec![0_u8; 8192];
+    loop {
+        let n = recv_into(fd.as_raw_fd(), &mut buf)?;
+        let done = parse_route_messages(&buf[..n], &mut routes)?;
+        if done {
+            routes.sort_by_key(|route| {
+                (
+                    route.family,
+                    route.destination,
+                    route.prefix_length,
+                    route.metric,
+                    route.output_interface,
+                )
+            });
+            return Ok(routes);
+        }
+    }
+}
+
 #[repr(C)]
 struct LinkDumpRequest {
     header: NlMsgHdr,
@@ -238,6 +298,12 @@ struct LinkDumpRequest {
 struct AddressDumpRequest {
     header: NlMsgHdr,
     info: IfAddrMsg,
+}
+
+#[repr(C)]
+struct RouteDumpRequest {
+    header: NlMsgHdr,
+    info: RtMsg,
 }
 
 impl AddressDumpRequest {
@@ -295,13 +361,51 @@ impl LinkDumpRequest {
     }
 }
 
+impl RouteDumpRequest {
+    fn new(sequence: u32) -> Self {
+        Self {
+            header: NlMsgHdr {
+                nlmsg_len: size_of::<Self>() as u32,
+                nlmsg_type: RTM_GETROUTE,
+                nlmsg_flags: NLM_F_REQUEST | NLM_F_DUMP,
+                nlmsg_seq: sequence,
+                nlmsg_pid: 0,
+            },
+            info: RtMsg {
+                rtm_family: 0,
+                rtm_dst_len: 0,
+                rtm_src_len: 0,
+                rtm_tos: 0,
+                rtm_table: 0,
+                rtm_protocol: 0,
+                rtm_scope: 0,
+                rtm_type: 0,
+                rtm_flags: 0,
+            },
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        let ptr = self as *const Self as *const u8;
+        // SAFETY: RouteDumpRequest is repr(C), plain data, and lives for the returned slice lifetime.
+        unsafe { std::slice::from_raw_parts(ptr, size_of::<Self>()) }
+    }
+}
+
 fn open_route_socket() -> Result<OwnedFd, NetlinkError> {
     open_socket_with_groups(NETLINK_ROUTE, 0)
 }
 
 fn open_link_event_source() -> Result<RtnetlinkEventSource, NetlinkError> {
     SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
-    let fd = open_socket_with_groups(NETLINK_ROUTE, RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR)?;
+    let fd = open_socket_with_groups(
+        NETLINK_ROUTE,
+        RTMGRP_LINK
+            | RTMGRP_IPV4_IFADDR
+            | RTMGRP_IPV6_IFADDR
+            | RTMGRP_IPV4_ROUTE
+            | RTMGRP_IPV6_ROUTE,
+    )?;
     set_nonblocking(fd.as_raw_fd())?;
     Ok(RtnetlinkEventSource {
         fd,
@@ -310,10 +414,7 @@ fn open_link_event_source() -> Result<RtnetlinkEventSource, NetlinkError> {
     })
 }
 
-pub(crate) fn open_socket_with_groups(
-    protocol: i32,
-    groups: u32,
-) -> Result<OwnedFd, NetlinkError> {
+pub(crate) fn open_socket_with_groups(protocol: i32, groups: u32) -> Result<OwnedFd, NetlinkError> {
     // SAFETY: socket is called with constant arguments and checked for a negative return value.
     let raw = unsafe { socket(AF_NETLINK, SOCK_RAW, protocol) };
     if raw < 0 {
@@ -328,7 +429,7 @@ pub(crate) fn open_socket_with_groups(
         nl_groups: groups,
     };
     // SAFETY: addr points to a valid SockAddrNl for the duration of the call.
-    let rc = unsafe { bind(fd.as_raw_fd(), &addr, size_of::<SockAddrNl>() as u32) };
+    let rc = unsafe { bind(fd.as_raw_fd(), (&addr as *const SockAddrNl).cast(), size_of::<SockAddrNl>() as u32) };
     if rc < 0 {
         return Err(io::Error::last_os_error().into());
     }
@@ -345,11 +446,7 @@ fn set_flag(fd: i32, flag: i32, enabled: bool) -> Result<(), NetlinkError> {
     if flags < 0 {
         return Err(io::Error::last_os_error().into());
     }
-    let updated = if enabled {
-        flags | flag
-    } else {
-        flags & !flag
-    };
+    let updated = if enabled { flags | flag } else { flags & !flag };
     // SAFETY: fcntl is called with a valid file descriptor and F_SETFL command.
     let rc = unsafe { fcntl(fd, F_SETFL, updated) };
     if rc < 0 {
@@ -377,6 +474,136 @@ pub(crate) fn recv_into(fd: i32, buf: &mut [u8]) -> Result<usize, NetlinkError> 
         return Err(io::Error::last_os_error().into());
     }
     Ok(n as usize)
+}
+
+fn push_struct<T>(buf: &mut Vec<u8>, value: &T) {
+    let ptr = value as *const T as *const u8;
+    // SAFETY: value is valid for size_of::<T>() bytes while this function copies it.
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, size_of::<T>()) };
+    buf.extend_from_slice(bytes);
+}
+
+/// Appends a netlink attribute (header + value, 4-byte aligned).
+pub(crate) fn push_attr(message: &mut Vec<u8>, attr_type: u16, value: &[u8]) {
+    let attr_len = size_of::<RtAttr>() + value.len();
+    push_struct(
+        message,
+        &RtAttr {
+            rta_len: attr_len as u16,
+            rta_type: attr_type,
+        },
+    );
+    message.extend_from_slice(value);
+    let pad = align(attr_len, RTA_ALIGNTO) - attr_len;
+    message.extend_from_slice(&[0; 4][..pad]);
+}
+
+/// Builds a single netlink message from a type, flags and raw payload.
+pub(crate) fn build_netlink_message(message_type: u16, flags: u16, payload: &[u8]) -> Vec<u8> {
+    let mut message = Vec::with_capacity(size_of::<NlMsgHdr>() + payload.len());
+    push_struct(
+        &mut message,
+        &NlMsgHdr {
+            nlmsg_len: (size_of::<NlMsgHdr>() + payload.len()) as u32,
+            nlmsg_type: message_type,
+            nlmsg_flags: flags,
+            nlmsg_seq: 1,
+            nlmsg_pid: 0,
+        },
+    );
+    message.extend_from_slice(payload);
+    message
+}
+
+/// Builds an ifaddrmsg payload with the given attributes (e.g. IFA_LOCAL/IFA_ADDRESS).
+pub(crate) fn ifaddr_payload(
+    family: u8,
+    prefix_length: u8,
+    index: i32,
+    attrs: &[(u16, Vec<u8>)],
+) -> Vec<u8> {
+    let mut payload = Vec::new();
+    push_struct(
+        &mut payload,
+        &IfAddrMsg {
+            ifa_family: family,
+            ifa_prefixlen: prefix_length,
+            ifa_flags: 0,
+            ifa_scope: 0,
+            ifa_index: index as u32,
+        },
+    );
+    for (attr_type, value) in attrs {
+        push_attr(&mut payload, *attr_type, value);
+    }
+    payload
+}
+
+/// Builds an rtmsg payload for the given family, scope, type and attributes.
+pub(crate) fn rtmsg_payload(
+    family: u8,
+    dst_len: u8,
+    table: u8,
+    scope: u8,
+    route_type: u8,
+    attrs: &[(u16, Vec<u8>)],
+) -> Vec<u8> {
+    let mut payload = Vec::new();
+    push_struct(
+        &mut payload,
+        &RtMsg {
+            rtm_family: family,
+            rtm_dst_len: dst_len,
+            rtm_src_len: 0,
+            rtm_tos: 0,
+            rtm_table: table,
+            rtm_protocol: RTPROT_STATIC,
+            rtm_scope: scope,
+            rtm_type: route_type,
+            rtm_flags: 0,
+        },
+    );
+    for (attr_type, value) in attrs {
+        push_attr(&mut payload, *attr_type, value);
+    }
+    payload
+}
+
+/// Sends a single request with `NLM_F_ACK` and waits for the kernel's error
+/// reply, returning `Err(Kernel(code))` when the operation was rejected.
+pub(crate) fn transact_rtnetlink(message: &[u8]) -> Result<(), NetlinkError> {
+    let fd = open_route_socket()?;
+    send_all(fd.as_raw_fd(), message)?;
+    let mut buf = vec![0_u8; 4096];
+    loop {
+        let n = recv_into(fd.as_raw_fd(), &mut buf)?;
+        let mut offset = 0;
+        while offset + size_of::<NlMsgHdr>() <= n {
+            let header = read_unaligned::<NlMsgHdr>(&buf[offset..])?;
+            let len = header.nlmsg_len as usize;
+            if len < size_of::<NlMsgHdr>() || offset + len > n {
+                return Err(NetlinkError::MalformedMessage("invalid ack length"));
+            }
+            let payload = &buf[offset + size_of::<NlMsgHdr>()..offset + len];
+            if header.nlmsg_type == NLMSG_ERROR {
+                let error = parse_kernel_error_code(payload)?;
+                if error == 0 {
+                    return Ok(());
+                }
+                return Err(NetlinkError::Kernel(error));
+            }
+            offset += align(len, NLMSG_ALIGNTO);
+        }
+    }
+}
+
+fn parse_kernel_error_code(payload: &[u8]) -> Result<i32, NetlinkError> {
+    if payload.len() < size_of::<i32>() {
+        return Err(NetlinkError::MalformedMessage("short nlmsgerr"));
+    }
+    let mut bytes = [0_u8; 4];
+    bytes.copy_from_slice(&payload[..4]);
+    Ok(i32::from_ne_bytes(bytes))
 }
 
 fn parse_link_messages(buf: &[u8], links: &mut Vec<Link>) -> Result<bool, NetlinkError> {
@@ -474,6 +701,24 @@ fn parse_network_events(buf: &[u8]) -> Result<Vec<NetworkEvent>, NetlinkError> {
                     }));
                 }
             }
+            RTM_NEWROUTE => {
+                if let Some(route) = parse_route(payload)? {
+                    let kind = if header.nlmsg_flags & NLM_F_CREATE != 0 {
+                        RouteEventKind::Added
+                    } else {
+                        RouteEventKind::Changed
+                    };
+                    events.push(NetworkEvent::Route(RouteEvent { kind, route }));
+                }
+            }
+            RTM_DELROUTE => {
+                if let Some(route) = parse_route(payload)? {
+                    events.push(NetworkEvent::Route(RouteEvent {
+                        kind: RouteEventKind::Removed,
+                        route,
+                    }));
+                }
+            }
             _ => {}
         }
         offset += align(len, NLMSG_ALIGNTO);
@@ -487,12 +732,10 @@ fn parse_network_events(buf: &[u8]) -> Result<Vec<NetworkEvent>, NetlinkError> {
 }
 
 pub(crate) fn parse_kernel_error(payload: &[u8]) -> NetlinkError {
-    if payload.len() < size_of::<i32>() {
-        return NetlinkError::MalformedMessage("short nlmsgerr");
+    match parse_kernel_error_code(payload) {
+        Ok(code) => NetlinkError::Kernel(code),
+        Err(err) => err,
     }
-    let mut bytes = [0_u8; 4];
-    bytes.copy_from_slice(&payload[..4]);
-    NetlinkError::Kernel(i32::from_ne_bytes(bytes))
 }
 
 fn parse_address(payload: &[u8]) -> Result<Option<Address>, NetlinkError> {
@@ -551,6 +794,144 @@ fn parse_address(payload: &[u8]) -> Result<Option<Address>, NetlinkError> {
     }))
 }
 
+fn parse_route_messages(buf: &[u8], routes: &mut Vec<Route>) -> Result<bool, NetlinkError> {
+    let mut offset = 0;
+    while offset + size_of::<NlMsgHdr>() <= buf.len() {
+        let header = read_unaligned::<NlMsgHdr>(&buf[offset..])?;
+        let len = header.nlmsg_len as usize;
+        if len < size_of::<NlMsgHdr>() || offset + len > buf.len() {
+            return Err(NetlinkError::MalformedMessage("invalid nlmsghdr length"));
+        }
+        let payload = &buf[offset + size_of::<NlMsgHdr>()..offset + len];
+        match header.nlmsg_type {
+            NLMSG_DONE => return Ok(true),
+            NLMSG_ERROR => return Err(parse_kernel_error(payload)),
+            RTM_NEWROUTE => {
+                if let Some(route) = parse_route(payload)? {
+                    routes.push(route);
+                }
+            }
+            _ => {}
+        }
+        offset += align(len, NLMSG_ALIGNTO);
+    }
+    Ok(false)
+}
+
+fn parse_route(payload: &[u8]) -> Result<Option<Route>, NetlinkError> {
+    if payload.len() < size_of::<RtMsg>() {
+        return Err(NetlinkError::MalformedMessage("short rtmsg"));
+    }
+    let info = read_unaligned::<RtMsg>(payload)?;
+    let family = match info.rtm_family {
+        AF_INET => IpFamily::V4,
+        AF_INET6 => IpFamily::V6,
+        _ => return Ok(None),
+    };
+    let table = if info.rtm_table == 0 {
+        RT_TABLE_MAIN
+    } else {
+        info.rtm_table
+    };
+    if table != RT_TABLE_MAIN {
+        return Ok(None);
+    }
+    let kind = RouteKind::from_u8(info.rtm_type);
+    if !matches!(
+        kind,
+        RouteKind::Unicast | RouteKind::Blackhole | RouteKind::Unreachable
+    ) {
+        return Ok(None);
+    }
+
+    let expected_len = match family {
+        IpFamily::V4 => 4,
+        IpFamily::V6 => 16,
+    };
+    let mut destination = None;
+    let mut gateway = None;
+    let mut output_interface = None;
+    let mut metric = None;
+    let mut offset = size_of::<RtMsg>();
+    while offset + size_of::<RtAttr>() <= payload.len() {
+        let attr = read_unaligned::<RtAttr>(&payload[offset..])?;
+        let len = attr.rta_len as usize;
+        if len < size_of::<RtAttr>() || offset + len > payload.len() {
+            return Err(NetlinkError::MalformedMessage("invalid rtattr length"));
+        }
+        let value = &payload[offset + size_of::<RtAttr>()..offset + len];
+        match attr.rta_type {
+            RTA_DST => {
+                if value.len() != expected_len {
+                    return Err(NetlinkError::MalformedMessage(
+                        "invalid route destination length",
+                    ));
+                }
+                destination = Some(value.to_vec());
+            }
+            RTA_GATEWAY => {
+                if value.len() != expected_len {
+                    return Err(NetlinkError::MalformedMessage(
+                        "invalid route gateway length",
+                    ));
+                }
+                gateway = Some(value.to_vec());
+            }
+            RTA_OIF => {
+                if value.len() != size_of::<u32>() {
+                    return Err(NetlinkError::MalformedMessage("invalid route oif length"));
+                }
+                let mut bytes = [0_u8; 4];
+                bytes.copy_from_slice(value);
+                output_interface = Some(i32::from_ne_bytes(bytes));
+            }
+            RTA_PRIORITY => {
+                if value.len() != size_of::<u32>() {
+                    return Err(NetlinkError::MalformedMessage(
+                        "invalid route metric length",
+                    ));
+                }
+                let mut bytes = [0_u8; 4];
+                bytes.copy_from_slice(value);
+                metric = Some(u32::from_ne_bytes(bytes));
+            }
+            _ => {}
+        }
+        offset += align(len, RTA_ALIGNTO);
+    }
+
+    let destination = match destination {
+        Some(bytes) => address_from_bytes(family, &bytes),
+        None => match family {
+            IpFamily::V4 => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            IpFamily::V6 => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        },
+    };
+    let gateway = gateway.map(|bytes| address_from_bytes(family, &bytes));
+
+    Ok(Some(Route {
+        family,
+        destination,
+        prefix_length: info.rtm_dst_len,
+        gateway,
+        output_interface,
+        metric,
+        kind,
+        scope: RouteScope::from_u8(info.rtm_scope),
+    }))
+}
+
+fn address_from_bytes(family: IpFamily, bytes: &[u8]) -> IpAddr {
+    match family {
+        IpFamily::V4 => IpAddr::V4(Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3])),
+        IpFamily::V6 => {
+            let mut octets = [0_u8; 16];
+            octets.copy_from_slice(&bytes[..16]);
+            IpAddr::V6(Ipv6Addr::from(octets))
+        }
+    }
+}
+
 fn parse_link(payload: &[u8]) -> Result<Option<Link>, NetlinkError> {
     if payload.len() < size_of::<IfInfoMsg>() {
         return Err(NetlinkError::MalformedMessage("short ifinfomsg"));
@@ -594,13 +975,6 @@ pub(crate) const fn align(len: usize, to: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn push_struct<T>(buf: &mut Vec<u8>, value: &T) {
-        let ptr = value as *const T as *const u8;
-        // SAFETY: value is valid for size_of::<T>() bytes while this function copies it.
-        let bytes = unsafe { std::slice::from_raw_parts(ptr, size_of::<T>()) };
-        buf.extend_from_slice(bytes);
-    }
 
     fn link_message(
         message_type: u16,
@@ -699,6 +1073,53 @@ mod tests {
         );
         message.extend_from_slice(address);
         message.resize(size_of::<NlMsgHdr>() + payload_len, 0);
+        message
+    }
+
+    fn push_attr(message: &mut Vec<u8>, attr_type: u16, value: &[u8]) {
+        super::push_attr(message, attr_type, value);
+    }
+
+    fn route_message(
+        message_type: u16,
+        family: u8,
+        dst_len: u8,
+        table: u8,
+        route_type: u8,
+        scope: u8,
+        attrs: &[(u16, Vec<u8>)],
+    ) -> Vec<u8> {
+        let mut attrs_bytes = Vec::new();
+        for (attr_type, value) in attrs {
+            push_attr(&mut attrs_bytes, *attr_type, value);
+        }
+        let payload_len = size_of::<RtMsg>() + attrs_bytes.len();
+        let mut message = Vec::new();
+        push_struct(
+            &mut message,
+            &NlMsgHdr {
+                nlmsg_len: (size_of::<NlMsgHdr>() + payload_len) as u32,
+                nlmsg_type: message_type,
+                nlmsg_flags: 0,
+                nlmsg_seq: 1,
+                nlmsg_pid: 0,
+            },
+        );
+        push_struct(
+            &mut message,
+            &RtMsg {
+                rtm_family: family,
+                rtm_dst_len: dst_len,
+                rtm_src_len: 0,
+                rtm_tos: 0,
+                rtm_table: table,
+                rtm_protocol: 4,
+                rtm_scope: scope,
+                rtm_type: route_type,
+                rtm_flags: 0,
+            },
+        );
+        message.extend_from_slice(&attrs_bytes);
         message
     }
 
@@ -1014,6 +1435,259 @@ mod tests {
                 kind: AddressEventKind::Removed,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn parses_ipv4_default_route_enumeration() {
+        let mut message = route_message(
+            RTM_NEWROUTE,
+            AF_INET,
+            0,
+            254,
+            1,
+            0,
+            &[
+                (RTA_GATEWAY, vec![192, 168, 1, 1]),
+                (RTA_OIF, 3_i32.to_ne_bytes().to_vec()),
+                (RTA_PRIORITY, 100_u32.to_ne_bytes().to_vec()),
+            ],
+        );
+        push_struct(
+            &mut message,
+            &NlMsgHdr {
+                nlmsg_len: size_of::<NlMsgHdr>() as u32,
+                nlmsg_type: NLMSG_DONE,
+                nlmsg_flags: 0,
+                nlmsg_seq: 1,
+                nlmsg_pid: 0,
+            },
+        );
+
+        let mut routes = Vec::new();
+        assert!(parse_route_messages(&message, &mut routes).unwrap());
+        assert_eq!(routes.len(), 1);
+        assert!(routes[0].is_default());
+        assert_eq!(routes[0].family, IpFamily::V4);
+        assert_eq!(
+            routes[0].gateway,
+            Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)))
+        );
+        assert_eq!(routes[0].output_interface, Some(3));
+        assert_eq!(routes[0].metric, Some(100));
+        assert_eq!(routes[0].kind, RouteKind::Unicast);
+        assert_eq!(routes[0].scope, RouteScope::Universe);
+    }
+
+    #[test]
+    fn parses_ipv6_static_route_enumeration() {
+        let destination = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let gateway = [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let mut message = route_message(
+            RTM_NEWROUTE,
+            AF_INET6,
+            48,
+            254,
+            1,
+            0,
+            &[
+                (RTA_DST, destination.to_vec()),
+                (RTA_GATEWAY, gateway.to_vec()),
+                (RTA_OIF, 3_i32.to_ne_bytes().to_vec()),
+            ],
+        );
+        push_struct(
+            &mut message,
+            &NlMsgHdr {
+                nlmsg_len: size_of::<NlMsgHdr>() as u32,
+                nlmsg_type: NLMSG_DONE,
+                nlmsg_flags: 0,
+                nlmsg_seq: 1,
+                nlmsg_pid: 0,
+            },
+        );
+
+        let mut routes = Vec::new();
+        assert!(parse_route_messages(&message, &mut routes).unwrap());
+        assert_eq!(routes.len(), 1);
+        assert_eq!(
+            routes[0].destination,
+            IpAddr::V6(Ipv6Addr::from(destination))
+        );
+        assert_eq!(routes[0].prefix_length, 48);
+        assert_eq!(routes[0].family, IpFamily::V6);
+    }
+
+    #[test]
+    fn parses_route_added_and_removed_events() {
+        let added = route_message(
+            RTM_NEWROUTE,
+            AF_INET,
+            0,
+            254,
+            1,
+            0,
+            &[
+                (RTA_GATEWAY, vec![10, 0, 0, 1]),
+                (RTA_OIF, 4_i32.to_ne_bytes().to_vec()),
+            ],
+        );
+        let events = parse_network_events(&added).unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            events[0],
+            NetworkEvent::Route(RouteEvent {
+                kind: RouteEventKind::Changed,
+                ..
+            })
+        ));
+
+        let removed = route_message(
+            RTM_DELROUTE,
+            AF_INET,
+            0,
+            254,
+            1,
+            0,
+            &[
+                (RTA_GATEWAY, vec![10, 0, 0, 1]),
+                (RTA_OIF, 4_i32.to_ne_bytes().to_vec()),
+            ],
+        );
+        let events = parse_network_events(&removed).unwrap();
+        assert!(matches!(
+            events[0],
+            NetworkEvent::Route(RouteEvent {
+                kind: RouteEventKind::Removed,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn route_dump_skips_non_main_tables_and_special_routes() {
+        let in_local_table = route_message(RTM_NEWROUTE, AF_INET, 24, 255, 2, 0, &[]);
+        let local_route = route_message(RTM_NEWROUTE, AF_INET, 24, 254, 2, 0, &[]);
+        let unicast = route_message(RTM_NEWROUTE, AF_INET, 24, 254, 1, 253, &[]);
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&in_local_table);
+        buffer.extend_from_slice(&local_route);
+        buffer.extend_from_slice(&unicast);
+
+        let routes = parse_network_events(&buffer).unwrap();
+        assert_eq!(
+            routes.len(),
+            1,
+            "only the main-table unicast route is reported"
+        );
+        match &routes[0] {
+            NetworkEvent::Route(RouteEvent { route, .. }) => {
+                assert_eq!(route.kind, RouteKind::Unicast);
+                assert_eq!(route.scope, RouteScope::Link);
+            }
+            _ => panic!("expected a route event"),
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_route_attributes() {
+        let mut message = route_message(
+            RTM_NEWROUTE,
+            AF_INET,
+            0,
+            254,
+            1,
+            0,
+            &[(RTA_GATEWAY, vec![10, 0, 0, 1])],
+        );
+        let attr_offset = size_of::<NlMsgHdr>() + size_of::<RtMsg>();
+        message[attr_offset] = 1;
+        message[attr_offset + 1] = 0;
+        assert!(matches!(
+            parse_network_events(&message),
+            Err(NetlinkError::MalformedMessage(_))
+        ));
+    }
+
+    #[test]
+    fn builds_ipv4_address_request() {
+        let message = build_netlink_message(
+            RTM_NEWADDR,
+            NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK,
+            &ifaddr_payload(
+                AF_INET,
+                24,
+                5,
+                &[
+                    (IFA_LOCAL, vec![10, 0, 0, 5]),
+                    (IFA_ADDRESS, vec![10, 0, 0, 5]),
+                ],
+            ),
+        );
+        let header = read_unaligned::<NlMsgHdr>(&message).unwrap();
+        assert_eq!(header.nlmsg_type, RTM_NEWADDR);
+        assert_eq!(header.nlmsg_flags, NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK);
+        assert_eq!(header.nlmsg_len as usize, message.len());
+        let info = read_unaligned::<IfAddrMsg>(&message[size_of::<NlMsgHdr>()..]).unwrap();
+        assert_eq!(info.ifa_family, AF_INET);
+        assert_eq!(info.ifa_prefixlen, 24);
+        assert_eq!(info.ifa_index, 5);
+    }
+
+    #[test]
+    fn builds_route_request_with_attributes() {
+        let message = build_netlink_message(
+            RTM_NEWROUTE,
+            NLM_F_REQUEST | NLM_F_CREATE | NLM_F_REPLACE | NLM_F_ACK,
+            &rtmsg_payload(
+                AF_INET,
+                24,
+                RT_TABLE_MAIN,
+                RT_SCOPE_LINK,
+                RTN_UNICAST,
+                &[(RTA_DST, vec![192, 168, 5, 0]), (RTA_OIF, 5_i32.to_ne_bytes().to_vec())],
+            ),
+        );
+        let info = read_unaligned::<RtMsg>(&message[size_of::<NlMsgHdr>()..]).unwrap();
+        assert_eq!(info.rtm_family, AF_INET);
+        assert_eq!(info.rtm_dst_len, 24);
+        assert_eq!(info.rtm_table, RT_TABLE_MAIN);
+        assert_eq!(info.rtm_scope, RT_SCOPE_LINK);
+        assert_eq!(info.rtm_type, RTN_UNICAST);
+        assert_eq!(info.rtm_protocol, RTPROT_STATIC);
+    }
+
+    #[test]
+    fn ack_transaction_interprets_kernel_error_codes() {
+        assert_eq!(parse_kernel_error_code(&0_i32.to_ne_bytes()).unwrap(), 0);
+        assert_eq!(
+            parse_kernel_error_code(&(-17_i32).to_ne_bytes()).unwrap(),
+            -17
+        );
+        assert!(matches!(
+            parse_kernel_error_code(&[]),
+            Err(NetlinkError::MalformedMessage(_))
+        ));
+
+        let failure = {
+            let mut message = Vec::new();
+            push_struct(
+                &mut message,
+                &NlMsgHdr {
+                    nlmsg_len: (size_of::<NlMsgHdr>() + size_of::<i32>()) as u32,
+                    nlmsg_type: NLMSG_ERROR,
+                    nlmsg_flags: 0,
+                    nlmsg_seq: 1,
+                    nlmsg_pid: 0,
+                },
+            );
+            push_struct(&mut message, &(-17_i32));
+            message
+        };
+        let events = parse_network_events(&failure);
+        assert!(matches!(
+            events,
+            Err(NetlinkError::Kernel(code)) if code == -17
         ));
     }
 }

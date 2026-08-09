@@ -15,8 +15,8 @@ use crate::linux::model::{
     WirelessInterface, frequency_to_channel,
 };
 use crate::linux::netlink::{
-    align, open_socket_with_groups, parse_kernel_error, read_unaligned, recv_into, send_all,
-    set_nonblocking, NlMsgHdr,
+    NlMsgHdr, align, open_socket_with_groups, parse_kernel_error, read_unaligned, recv_into,
+    send_all, set_nonblocking,
 };
 
 const NETLINK_GENERIC: i32 = 16;
@@ -195,13 +195,19 @@ impl Nl80211Connection {
 
     /// Triggers an active scan on the given interface (read-only).
     pub fn trigger_scan(&mut self, ifindex: i32) -> Result<(), NetlinkError> {
-        let attrs = [(NL80211_ATTR_IFINDEX, (ifindex as u32).to_ne_bytes().to_vec())];
+        let attrs = [(
+            NL80211_ATTR_IFINDEX,
+            (ifindex as u32).to_ne_bytes().to_vec(),
+        )];
         self.transact_ack(NL80211_CMD_TRIGGER_SCAN, &attrs)
     }
 
     /// Dumps the current scan results (cached BSSes) for an interface.
     pub fn dump_scan(&mut self, ifindex: i32) -> Result<Vec<AccessPoint>, NetlinkError> {
-        let attrs = [(NL80211_ATTR_IFINDEX, (ifindex as u32).to_ne_bytes().to_vec())];
+        let attrs = [(
+            NL80211_ATTR_IFINDEX,
+            (ifindex as u32).to_ne_bytes().to_vec(),
+        )];
         let mut out = Vec::new();
         for message in self.transact_dump(NL80211_CMD_GET_SCAN, &attrs)? {
             if message.cmd == Some(NL80211_CMD_GET_SCAN)
@@ -227,13 +233,7 @@ impl Nl80211Connection {
         cmd: u8,
         attrs: &[(u16, Vec<u8>)],
     ) -> Result<Vec<RawMsg>, NetlinkError> {
-        let request = build_message(
-            self.family_id,
-            cmd,
-            NLM_F_REQUEST | NLM_F_DUMP,
-            1,
-            attrs,
-        );
+        let request = build_message(self.family_id, cmd, NLM_F_REQUEST | NLM_F_DUMP, 1, attrs);
         send_all(self.fd.as_raw_fd(), &request)?;
         let mut messages = Vec::new();
         loop {
@@ -248,18 +248,8 @@ impl Nl80211Connection {
         }
     }
 
-    fn transact_ack(
-        &mut self,
-        cmd: u8,
-        attrs: &[(u16, Vec<u8>)],
-    ) -> Result<(), NetlinkError> {
-        let request = build_message(
-            self.family_id,
-            cmd,
-            NLM_F_REQUEST | NLM_F_ACK,
-            1,
-            attrs,
-        );
+    fn transact_ack(&mut self, cmd: u8, attrs: &[(u16, Vec<u8>)]) -> Result<(), NetlinkError> {
+        let request = build_message(self.family_id, cmd, NLM_F_REQUEST | NLM_F_ACK, 1, attrs);
         send_all(self.fd.as_raw_fd(), &request)?;
         loop {
             let n = recv_into(self.fd.as_raw_fd(), &mut self.buf)?;
@@ -419,10 +409,7 @@ fn family_info_from_attrs(attrs: &[RawAttr]) -> Result<Option<FamilyInfo>, Netli
     id_bytes.copy_from_slice(&id_attr.payload);
     let id = u16::from_ne_bytes(id_bytes);
     let mut mcast_groups = Vec::new();
-    if let Some(groups_attr) = attrs
-        .iter()
-        .find(|attr| attr.typ == CTRL_ATTR_MCAST_GROUPS)
-    {
+    if let Some(groups_attr) = attrs.iter().find(|attr| attr.typ == CTRL_ATTR_MCAST_GROUPS) {
         for group in parse_attrs(&groups_attr.payload)? {
             let inner = parse_attrs(&group.payload)?;
             let name = read_string(&inner, CTRL_ATTR_MCAST_GRP_NAME)?;
@@ -432,10 +419,7 @@ fn family_info_from_attrs(attrs: &[RawAttr]) -> Result<Option<FamilyInfo>, Netli
             }
         }
     }
-    Ok(Some(FamilyInfo {
-        id,
-        mcast_groups,
-    }))
+    Ok(Some(FamilyInfo { id, mcast_groups }))
 }
 
 /// Parses an nl80211 interface dump buffer into typed interfaces.
@@ -499,7 +483,8 @@ pub(crate) fn parse_scan_events(buf: &[u8]) -> Result<Vec<WifiEvent>, NetlinkErr
         let Some(index) = read_u32(&message.attrs, NL80211_ATTR_IFINDEX)? else {
             continue;
         };
-        let frequency = read_u32(&message.attrs, NL80211_ATTR_WIPHY_FREQ)?.filter(|freq| *freq != 0);
+        let frequency =
+            read_u32(&message.attrs, NL80211_ATTR_WIPHY_FREQ)?.filter(|freq| *freq != 0);
         out.push(WifiEvent {
             kind,
             interface_index: index as i32,
@@ -573,10 +558,16 @@ fn band_from_attrs(band_id: u8, payload: &[u8]) -> Result<Option<WifiBand>, Netl
         ht_capabilities: None,
         vht_capabilities: None,
     };
-    if let Some(freqs) = attrs.iter().find(|attr| attr.typ == NL80211_BAND_ATTR_FREQS) {
+    if let Some(freqs) = attrs
+        .iter()
+        .find(|attr| attr.typ == NL80211_BAND_ATTR_FREQS)
+    {
         for entry in parse_attrs(&freqs.payload)? {
             let inner = parse_attrs(&entry.payload)?;
-            if inner.iter().any(|attr| attr.typ == NL80211_FREQUENCY_ATTR_DISABLED) {
+            if inner
+                .iter()
+                .any(|attr| attr.typ == NL80211_FREQUENCY_ATTR_DISABLED)
+            {
                 continue;
             }
             if let Some(frequency) = read_u32(&inner, NL80211_FREQUENCY_ATTR_FREQ)? {
@@ -591,7 +582,7 @@ fn band_from_attrs(band_id: u8, payload: &[u8]) -> Result<Option<WifiBand>, Netl
 }
 
 fn parse_cipher_suites(payload: &[u8]) -> Result<Vec<WifiCipher>, NetlinkError> {
-    if payload.len() % size_of::<u32>() != 0 {
+    if !payload.len().is_multiple_of(size_of::<u32>()) {
         return Err(NetlinkError::MalformedMessage(
             "invalid cipher suite length",
         ));
@@ -620,12 +611,12 @@ fn bss_from_attrs(attrs: &[RawAttr]) -> Result<Option<AccessPoint>, NetlinkError
     let seen_millis_ago = read_u32(&bss, NL80211_BSS_SEEN_MS_AGO)?;
     let information_elements = read_bytes(&bss, NL80211_BSS_INFORMATION_ELEMENTS)
         .or_else(|| read_bytes(&bss, NL80211_BSS_BEACON_IES));
-    let ssid = read_ssid(attrs, NL80211_ATTR_SSID)?
-        .or_else(|| information_elements.as_ref().and_then(|ies| ssid_from_ies(ies)));
-    let security = parse_security(
-        information_elements.as_deref().unwrap_or(&[]),
-        capability,
-    )?;
+    let ssid = read_ssid(attrs, NL80211_ATTR_SSID)?.or_else(|| {
+        information_elements
+            .as_ref()
+            .and_then(|ies| ssid_from_ies(ies))
+    });
+    let security = parse_security(information_elements.as_deref().unwrap_or(&[]), capability)?;
     Ok(Some(AccessPoint {
         bssid,
         ssid,
@@ -652,7 +643,9 @@ fn parse_security(
         let id = ies[offset];
         let len = ies[offset + 1] as usize;
         if offset + 2 + len > ies.len() {
-            return Err(NetlinkError::MalformedMessage("malformed information element"));
+            return Err(NetlinkError::MalformedMessage(
+                "malformed information element",
+            ));
         }
         let data = &ies[offset + 2..offset + 2 + len];
         match id {
@@ -663,7 +656,8 @@ fn parse_security(
                 security.management_frame_protection |= mfp;
             }
             IE_VENDOR
-                if data.len() >= 4 && data.starts_with(&WPA_OUI) && data[3] == WPA_OUI_TYPE => {
+                if data.len() >= 4 && data.starts_with(&WPA_OUI) && data[3] == WPA_OUI_TYPE =>
+            {
                 wpa_seen = true;
                 auth_suites.extend(parse_wpa_ie(&data[4..])?);
             }
@@ -776,7 +770,9 @@ fn parse_wpa_ie(data: &[u8]) -> Result<Vec<WifiAuthSuite>, NetlinkError> {
 
 fn read_ie_u16(data: &[u8], offset: &mut usize) -> Result<u16, NetlinkError> {
     if *offset + 2 > data.len() {
-        return Err(NetlinkError::MalformedMessage("malformed information element"));
+        return Err(NetlinkError::MalformedMessage(
+            "malformed information element",
+        ));
     }
     let value = read_le_u16(&data[*offset..*offset + 2]);
     *offset += 2;
@@ -785,7 +781,9 @@ fn read_ie_u16(data: &[u8], offset: &mut usize) -> Result<u16, NetlinkError> {
 
 fn skip_ie_bytes(data: &[u8], offset: &mut usize, count: usize) -> Result<(), NetlinkError> {
     if *offset + count > data.len() {
-        return Err(NetlinkError::MalformedMessage("malformed information element"));
+        return Err(NetlinkError::MalformedMessage(
+            "malformed information element",
+        ));
     }
     *offset += count;
     Ok(())
@@ -832,7 +830,9 @@ fn read_u8(attrs: &[RawAttr], typ: u16) -> Result<Option<u8>, NetlinkError> {
         return Ok(None);
     };
     if attr.payload.len() != size_of::<u8>() {
-        return Err(NetlinkError::MalformedMessage("invalid u8 attribute length"));
+        return Err(NetlinkError::MalformedMessage(
+            "invalid u8 attribute length",
+        ));
     }
     Ok(Some(attr.payload[0]))
 }
@@ -842,7 +842,9 @@ fn read_u16(attrs: &[RawAttr], typ: u16) -> Result<Option<u16>, NetlinkError> {
         return Ok(None);
     };
     if attr.payload.len() != size_of::<u16>() {
-        return Err(NetlinkError::MalformedMessage("invalid u16 attribute length"));
+        return Err(NetlinkError::MalformedMessage(
+            "invalid u16 attribute length",
+        ));
     }
     let mut bytes = [0_u8; 2];
     bytes.copy_from_slice(&attr.payload);
@@ -854,7 +856,9 @@ fn read_u32(attrs: &[RawAttr], typ: u16) -> Result<Option<u32>, NetlinkError> {
         return Ok(None);
     };
     if attr.payload.len() != size_of::<u32>() {
-        return Err(NetlinkError::MalformedMessage("invalid u32 attribute length"));
+        return Err(NetlinkError::MalformedMessage(
+            "invalid u32 attribute length",
+        ));
     }
     let mut bytes = [0_u8; 4];
     bytes.copy_from_slice(&attr.payload);
@@ -866,7 +870,9 @@ fn read_i32(attrs: &[RawAttr], typ: u16) -> Result<Option<i32>, NetlinkError> {
         return Ok(None);
     };
     if attr.payload.len() != size_of::<i32>() {
-        return Err(NetlinkError::MalformedMessage("invalid i32 attribute length"));
+        return Err(NetlinkError::MalformedMessage(
+            "invalid i32 attribute length",
+        ));
     }
     let mut bytes = [0_u8; 4];
     bytes.copy_from_slice(&attr.payload);
@@ -878,7 +884,9 @@ fn read_mac(attrs: &[RawAttr], typ: u16) -> Result<Option<[u8; 6]>, NetlinkError
         return Ok(None);
     };
     if attr.payload.len() != 6 {
-        return Err(NetlinkError::MalformedMessage("invalid mac attribute length"));
+        return Err(NetlinkError::MalformedMessage(
+            "invalid mac attribute length",
+        ));
     }
     let mut mac = [0_u8; 6];
     mac.copy_from_slice(&attr.payload);
@@ -894,7 +902,9 @@ fn read_string(attrs: &[RawAttr], typ: u16) -> Result<Option<String>, NetlinkErr
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(attr.payload.len());
-    Ok(Some(String::from_utf8_lossy(&attr.payload[..end]).into_owned()))
+    Ok(Some(
+        String::from_utf8_lossy(&attr.payload[..end]).into_owned(),
+    ))
 }
 
 fn read_ssid(attrs: &[RawAttr], typ: u16) -> Result<Option<Ssid>, NetlinkError> {
@@ -991,7 +1001,10 @@ mod tests {
     }
 
     fn frequency_entry(channel: u16, frequency: u32) -> Vec<u8> {
-        nested_bytes(channel, &attr_bytes(NL80211_FREQUENCY_ATTR_FREQ, &frequency.to_ne_bytes()))
+        nested_bytes(
+            channel,
+            &attr_bytes(NL80211_FREQUENCY_ATTR_FREQ, &frequency.to_ne_bytes()),
+        )
     }
 
     fn ssid_ie(name: &[u8]) -> Vec<u8> {
@@ -1164,10 +1177,7 @@ mod tests {
         assert!(capabilities.scan_supported);
         assert_eq!(capabilities.bands.len(), 2);
         assert_eq!(capabilities.bands[0].id, WifiBandId::Ghz2);
-        assert_eq!(
-            capabilities.bands[0].channels,
-            vec![1, 6, 11]
-        );
+        assert_eq!(capabilities.bands[0].channels, vec![1, 6, 11]);
         assert_eq!(capabilities.bands[0].frequencies, vec![2412, 2437, 2462]);
         assert_eq!(capabilities.bands[0].ht_capabilities, Some(0x01ff));
         assert_eq!(capabilities.bands[1].id, WifiBandId::Ghz5);
@@ -1585,10 +1595,7 @@ mod tests {
         raw.extend(attr_bytes(NL80211_ATTR_CIPHER_SUITES, &[1, 2, 3]));
         let attrs = parse_attrs(&raw).unwrap();
         let wiphy = wiphy_from_attrs(&attrs);
-        assert!(matches!(
-            wiphy,
-            Err(NetlinkError::MalformedMessage(_))
-        ));
+        assert!(matches!(wiphy, Err(NetlinkError::MalformedMessage(_))));
     }
 
     #[test]
@@ -1597,13 +1604,19 @@ mod tests {
         ies.extend(ssid_ie(&[0xde, 0xad, 0x01, 0x02]));
         let ssid = ssid_from_ies(&ies).unwrap();
         assert_eq!(ssid.display_string(), "\\xde\\xad\\x01\\x02");
-        assert_eq!(Ssid::from_bytes(b"plain").unwrap().display_string(), "plain");
+        assert_eq!(
+            Ssid::from_bytes(b"plain").unwrap().display_string(),
+            "plain"
+        );
         assert_eq!(Ssid::from_bytes(b"").unwrap().display_string(), "(hidden)");
     }
 
     #[test]
     fn formats_bssid_and_ssid() {
-        assert_eq!(Bssid([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]).to_string(), "aa:bb:cc:dd:ee:ff");
+        assert_eq!(
+            Bssid([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]).to_string(),
+            "aa:bb:cc:dd:ee:ff"
+        );
         assert_eq!(Ssid::from_bytes(b"home").unwrap().to_string(), "home");
     }
 
@@ -1623,7 +1636,10 @@ mod tests {
     #[test]
     fn builds_well_formed_request() {
         let request = build_message(FAMILY_ID, NL80211_CMD_GET_INTERFACE, NLM_F_REQUEST, 7, &[]);
-        assert_eq!(request.len() as u32, u32::from_ne_bytes(request[0..4].try_into().unwrap()));
+        assert_eq!(
+            request.len() as u32,
+            u32::from_ne_bytes(request[0..4].try_into().unwrap())
+        );
         let header = read_unaligned::<NlMsgHdr>(&request).unwrap();
         assert_eq!(header.nlmsg_type, FAMILY_ID);
         assert_eq!(header.nlmsg_flags, NLM_F_REQUEST);
@@ -1639,7 +1655,10 @@ mod tests {
         ok[1] = 0xff;
         ok[2] = 0xff;
         ok[3] = 0xff;
-        assert!(matches!(parse_ack_error(&ok), Err(NetlinkError::Kernel(-1))));
+        assert!(matches!(
+            parse_ack_error(&ok),
+            Err(NetlinkError::Kernel(-1))
+        ));
         let short = vec![0_u8; 2];
         assert!(matches!(
             parse_ack_error(&short),
