@@ -1,30 +1,32 @@
 # network-manager-rs
 
-**A Rust-first, Linux-native network management daemon and compatibility platform.**
+**A Rust-first, Linux-native network management stack.**
 
-`network-manager-rs` is a ground-up implementation of a Linux network management stack written in Rust.
+`network-manager-rs` is an actively developed Linux network-management daemon written in Rust 2024.
 
-The project is designed around a straightforward premise:
+The project is building a modern networking stack around Linux-native interfaces such as **rtnetlink**, **generic netlink / nl80211**, native sockets, D-Bus, and Rust implementations of networking protocols.
 
-> **Keep the public Linux networking experience compatible where it matters, while replacing fragile shell-driven orchestration and legacy internal architecture with a modern, strongly typed Rust implementation.**
+The long-term goal is to provide a maintainable network-management implementation with a **NetworkManager-compatible D-Bus API**, allowing existing Linux applications and desktop environments to interact with the daemon through familiar interfaces while keeping the implementation underneath clean, typed, modular, and Rust-native.
 
-The objective is not to reproduce NetworkManager's internal implementation.
-
-The objective is to provide the capabilities Linux applications and desktop environments expect from a network manager while maintaining a cleaner, modular, testable, Linux-native implementation underneath.
+> **Familiar Linux networking interfaces on the outside. A modern Rust networking stack underneath.**
 
 ---
 
-## Current Status
+## Project Status
 
-This project has progressed beyond the initial networking-foundation stage.
+The project has progressed substantially beyond its original read-only rtnetlink foundation.
 
-The current stack includes substantial work across:
+The current implementation includes:
 
-* Linux link discovery and monitoring
-* IPv4/IPv6 address discovery and monitoring
-* native rtnetlink integration
-* native generic-netlink / `nl80211` Wi-Fi discovery
-* Wi-Fi access-point modelling and scanning
+* Linux link enumeration
+* IPv4 and IPv6 address enumeration
+* rtnetlink link events
+* rtnetlink address events
+* native Wi-Fi discovery through `nl80211`
+* Wi-Fi interface modelling
+* access-point discovery
+* Wi-Fi scanning
+* WPA/RSN information parsing
 * Wi-Fi supplicant integration
 * typed connection profiles
 * profile storage
@@ -33,298 +35,345 @@ The current stack includes substantial work across:
 * activation orchestration
 * Linux IP configuration
 * DHCP
-* DNS handling
-* composite activation engines
-* Linux network-namespace integration testing
-* a Rust-native integration harness
-* `nmd` command-line management tooling
-* D-Bus integration groundwork
-* NetworkManager-compatible API architecture
+* DNS configuration
+* Linux activation engine
+* network-namespace integration testing
+* Rust-native integration test infrastructure
+* `nmd` command-line tooling
+* NetworkManager-compatible D-Bus facade
+* typed D-Bus objects for networking devices, connections, access points, IP configuration, and DHCP configuration
 
-The project is now transitioning from **Linux networking primitives** into the **system integration and compatibility layer** required for a production-oriented network manager.
+The project is **not yet a drop-in replacement for NetworkManager**.
 
-It is still under active development and should not yet be considered a drop-in replacement for NetworkManager.
+The current development focus is moving from core networking implementation toward **D-Bus compatibility validation, lifecycle correctness, and desktop integration**.
 
 ---
 
 # Architecture
 
-The architecture is deliberately layered.
+The implementation is intentionally layered.
 
 ```text
-                    Linux Applications
-                           |
-                           |
-                     System D-Bus
-                           |
-                           v
-              NetworkManager-compatible
-                   compatibility API
-                           |
-                           v
-                 Rust domain model
-                           |
-        +------------------+------------------+
-        |                  |                  |
-        v                  v                  v
-   Connection          Device/Wi-Fi      IP/DHCP/DNS
-    Manager              subsystem         subsystem
-        |                  |                  |
-        +------------------+------------------+
-                           |
-                           v
-                 Linux-native backends
-                           |
-        +------------------+------------------+
-        |                  |                  |
-        v                  v                  v
-     rtnetlink          nl80211             sysfs
-        |                  |                  |
-        +------------------+------------------+
-                           |
-                           v
-                       Linux kernel
+                         Linux Applications
+                                |
+                                v
+                         System D-Bus
+                                |
+                                v
+               NetworkManager-compatible API
+                                |
+                                v
+                       Rust domain model
+                                |
+             +------------------+------------------+
+             |                  |                  |
+             v                  v                  v
+        Connection          Wi-Fi / Device      IP / DHCP / DNS
+         Manager              Manager             Subsystems
+             |                  |                  |
+             +------------------+------------------+
+                                |
+                                v
+                     Linux-native backends
+                                |
+             +------------------+------------------+
+             |                  |                  |
+             v                  v                  v
+         rtnetlink           nl80211          Linux sockets
+             |                  |                  |
+             +------------------+------------------+
+                                |
+                                v
+                         Linux kernel
 ```
 
-The important architectural rule is that **D-Bus is a compatibility boundary, not the internal architecture**.
+A core architectural principle is that **D-Bus is an API boundary rather than the internal networking architecture**.
 
-NetworkManager-compatible interfaces should translate into the existing Rust domain rather than forcing the entire implementation to imitate NetworkManager's historical internals.
+The D-Bus compatibility layer maps external API requests onto the existing Rust domain and backend abstractions instead of reproducing NetworkManager's historical internal implementation.
 
 ---
 
-# Linux-Native by Design
+# Linux-Native Networking
 
-Core networking functionality is implemented against Linux APIs directly.
+The project does not use command-line networking utilities as its networking backend.
 
-The project intentionally does **not** use networking command-line utilities as hidden implementation backends.
-
-The architecture avoids depending on:
+The implementation intentionally avoids depending on:
 
 * `ip`
 * `ifconfig`
 * `nmcli`
 * `iw`
-* `dhclient`
 * shell networking scripts
-* other command-line networking utilities
+* external DHCP command-line clients
 
-Instead, the project uses mechanisms such as:
+Instead, networking functionality is implemented around Linux APIs and protocols including:
 
 * rtnetlink
 * generic netlink
 * `nl80211`
 * Linux sockets
-* sysfs
-* kernel networking interfaces
+* network namespaces
 * D-Bus
-* native Rust implementations of required protocols and services
+* native protocol implementations
+* narrowly scoped Linux FFI where required
 
-This makes the networking stack substantially easier to reason about, test, embed, and eventually deploy independently of a traditional GNU/Linux userspace.
+This keeps the networking logic inside the Rust application rather than delegating system state management to shell commands.
 
 ---
 
-# Rust-First
+# Rust 2024
 
-The implementation is written in Rust 2024.
+The project uses the **Rust 2024 edition** with a declared minimum Rust version of **1.85**.
 
-The project intentionally keeps the implementation Rust-native rather than introducing a C implementation layer.
+The implementation is Rust-first and does not maintain a separate C networking implementation.
 
-Linux ABI interaction may use narrowly scoped FFI where required to communicate with kernel interfaces, but the project does not require a custom C codebase.
+Where Linux ABI interaction requires FFI, it is kept narrowly scoped to the relevant Linux interfaces.
 
-This keeps the core architecture suitable for environments built around either:
+The resulting architecture is intended to remain suitable for Linux environments using either:
 
 * glibc
 * musl
 
-The goal is not to tie the daemon unnecessarily to one particular userspace implementation.
+The project does not intentionally depend on a specific libc implementation for its core networking architecture.
 
 ---
 
-# Networking Foundation
+# Rtnetlink
 
-The rtnetlink layer currently provides typed access to Linux network state.
+The rtnetlink backend provides typed access to Linux network state.
 
-Supported areas include:
+## Links
 
-### Links
+Current functionality includes:
 
-* interface enumeration
+* network interface enumeration
 * interface indices
 * interface names
-* interface flags
+* link flags
 * link state
-* loopback identification
-* link creation/removal/state-change events
+* loopback detection
+* link creation events
+* link removal events
+* link state-change events
 
-### Addresses
+## Addresses
 
-* IPv4 addresses
-* IPv6 addresses
+Current functionality includes:
+
+* IPv4 address enumeration
+* IPv6 address enumeration
 * interface association
 * prefix lengths
-* address enumeration
 * address-added events
 * address-removed events
 
-The event system converts raw kernel notifications into typed Rust events before they reach higher layers.
+Raw netlink messages are parsed inside the Linux backend and converted into typed Rust structures before being exposed to higher layers.
 
-That separation is intentional.
-
-Higher-level code should not need to understand netlink message headers or kernel attribute encoding.
+Higher-level code therefore does not need to understand netlink headers or kernel attribute encoding.
 
 ---
 
 # Wi-Fi
 
-The Wi-Fi subsystem is built around Linux's native `nl80211` generic-netlink interface.
+Wi-Fi support is implemented using Linux's native **generic netlink / `nl80211`** interface.
 
 Current functionality includes infrastructure for:
 
 * wireless interface discovery
 * wireless device modelling
 * access-point discovery
-* BSSID representation
 * SSID representation
-* channel/frequency information
-* signal information
-* Wi-Fi authentication/cipher modelling
-* scan results
+* BSSID representation
+* frequency information
+* signal strength
+* Wi-Fi interface types
+* authentication and cipher modelling
+* Wi-Fi scanning
 * WPA/RSN information parsing
-* Wi-Fi event handling
-* supplicant integration
+* Wi-Fi event infrastructure
 
-The project is a **network manager**, not a Wi-Fi security-testing framework.
+The Wi-Fi subsystem is intended for **normal network management and connectivity**, not wireless security testing or attack functionality.
 
-Wi-Fi functionality exists to manage normal Linux connectivity:
+The intended flow is:
 
 ```text
-discover
-    ↓
-select network
-    ↓
-authenticate through the appropriate supplicant/control path
-    ↓
-activate connection
-    ↓
-configure IP
-    ↓
-maintain state
+Wi-Fi discovery
+      |
+      v
+Access-point selection
+      |
+      v
+Authentication / supplicant
+      |
+      v
+Connection activation
+      |
+      v
+IP configuration
+      |
+      v
+DNS configuration
 ```
-
-No wireless attack functionality is part of the project objective.
 
 ---
 
 # Connection Management
 
-The project now contains a typed connection-management architecture rather than treating connections as ad-hoc command execution.
+The project contains a typed connection-management architecture.
 
-Core concepts include:
+The major components include:
 
 * connection profiles
 * profile validation
 * profile storage
-* secret-provider boundaries
+* secret-provider abstraction
 * autoconnect policy
 * connection state machines
-* activation managers
+* connection events
+* activation management
 * activation engines
 * device information
-* typed connection events
 
-The architecture deliberately separates:
+The architecture separates policy from activation:
 
 ```text
-Profile
-   |
-Policy
-   |
-ActivationManager
-   |
-ActivationEngine
-   |
-Linux networking
+Connection Profile
+        |
+        v
+      Policy
+        |
+        v
+Activation Manager
+        |
+        v
+Activation Engine
+        |
+        v
+Linux Networking
 ```
 
-This allows the public API layer to remain independent from the underlying implementation.
+This makes connection behaviour independently testable and allows different activation mechanisms to be introduced without rewriting the domain model.
 
 ---
 
 # IP Configuration
 
-The project includes a Linux-native IP activation layer capable of coordinating:
+The Linux activation layer can coordinate IP configuration as part of connection activation.
+
+The current architecture covers:
 
 * interface configuration
 * IPv4 configuration
-* IPv6-aware state
-* routes required by activation
-* gateway configuration
-* DNS information
-* teardown
+* IPv6-aware networking state
+* routes required for activation
+* gateway information
+* DNS configuration
+* connection teardown
 
-The implementation is designed around direct kernel networking APIs rather than invoking `ip` or similar utilities.
+The implementation communicates with Linux networking APIs directly rather than invoking `ip` or other networking commands.
 
 ---
 
 # DHCP
 
-DHCP functionality is implemented as part of the networking stack rather than delegated to an external command-line DHCP client.
+DHCP functionality has been integrated into the activation stack.
 
-The DHCP layer participates in connection activation and provides the resulting configuration to the IP engine.
+The DHCP layer participates in connection activation and provides configuration information to the IP engine.
 
-The architecture allows DHCP state to become part of the higher-level connection state rather than existing as an opaque external process.
+The project also contains integration tests that exercise DHCP behaviour in isolated Linux network namespaces.
+
+The goal is to make DHCP part of the managed connection lifecycle rather than an opaque external process.
 
 ---
 
 # DNS
 
-DNS handling is separated into its own subsystem.
+DNS configuration is represented as part of connection activation rather than being treated as an unrelated side effect.
 
-The activation architecture treats DNS configuration as a managed component rather than an incidental side effect of obtaining an IP address.
+The current implementation provides the foundation for:
 
-This is important for eventually supporting:
+* DNS server configuration
+* DNS information returned through DHCP
+* DNS state exposed through the domain model
+* D-Bus IPv4 configuration data
 
-* desktop environments
-* multiple active connections
-* per-connection DNS policy
-* VPN integration
+More advanced DNS policy remains future work, including areas such as:
+
 * split DNS
-* different resolver backends
-
-The current implementation remains intentionally narrower than a complete production DNS policy engine.
+* per-connection resolver policy
+* VPN-aware DNS
+* resolver backend integration
 
 ---
 
-# Integration Testing
+# D-Bus
 
-Network management code cannot be validated purely through unit tests.
+A NetworkManager-compatible D-Bus facade has now been added.
 
-The project therefore includes Linux network-namespace integration testing.
+The facade is implemented using **zbus** and exposes typed objects over the system D-Bus architecture.
 
-The integration infrastructure can construct isolated networking environments and validate real kernel behavior without modifying the host's production network configuration.
+Current D-Bus work covers the major object families needed for the compatibility layer, including:
 
-The integration test architecture uses Rust-native mechanisms for:
+* NetworkManager root object
+* devices
+* Ethernet devices
+* Wi-Fi devices
+* access points
+* active connections
+* connection profiles
+* settings
+* IPv4 configuration
+* IPv6 configuration
+* DHCP configuration
+* D-Bus signals
+* settings-dictionary conversion
 
-* network namespaces
-* virtual Ethernet interfaces
-* rtnetlink configuration
-* DHCP testing
-* IP activation
-* teardown validation
+The facade is designed as a translation layer over the existing Rust networking model.
 
-The previous shell-based network integration harness has been replaced with a Rust-native integration harness.
+It does **not** maintain a completely independent networking state database.
 
-This is an intentional architectural decision:
+```text
+NetworkManager-compatible D-Bus API
+                 |
+                 v
+          D-Bus compatibility
+                 |
+                 v
+           Rust domain model
+                 |
+                 v
+       NetworkBackend / engines
+                 |
+                 v
+            Linux kernel
+```
 
-> **The test infrastructure should exercise the same Linux APIs the production implementation uses.**
+### Compatibility status
+
+The D-Bus API surface is under active development.
+
+The next compatibility milestone is to validate the implementation against:
+
+* actual system D-Bus behaviour
+* D-Bus introspection
+* object lifecycle
+* property semantics
+* method signatures
+* signal behaviour
+* NetworkManager-compatible clients
+* desktop integration
+
+The existence of an API with NetworkManager-compatible names does **not yet mean that every NetworkManager client will work without compatibility gaps**.
+
+That distinction is intentional and documented.
 
 ---
 
 # `nmd`
 
-The project includes an `nmd` command-line interface for interacting with the daemon functionality.
+The project includes the `nmd` command-line interface.
 
-Current functionality spans inspection and management operations including:
+Current commands include:
 
 ```text
 nmd links
@@ -337,76 +386,102 @@ nmd connect <profile> <interface>
 nmd disconnect <interface>
 ```
 
-The CLI is primarily an operational/debugging surface.
+The CLI provides a convenient operational and debugging surface for the underlying networking stack.
 
-It is not intended to become the primary application API.
-
-The long-term desktop/application integration surface is D-Bus.
+It is not intended to replace the D-Bus API as the primary application integration interface.
 
 ---
 
-# NetworkManager Compatibility
+# Network Namespace Integration Testing
 
-A major long-term objective is compatibility with the interfaces expected by existing Linux desktop environments and applications.
+Networking code requires more than unit tests.
 
-The project is therefore building a **NetworkManager-compatible D-Bus facade**.
+The repository contains a Rust-native Linux network-namespace integration harness.
 
-The design principle is:
+The integration environment can create isolated networking environments and exercise real kernel networking behaviour without requiring production host networking to be modified.
+
+The harness covers areas including:
+
+* network namespaces
+* virtual Ethernet interfaces
+* rtnetlink operations
+* DHCP
+* IP activation
+* connection teardown
+* route configuration
+* DNS/resolver configuration
+
+The project deliberately moved away from shell-based integration testing toward Rust-native test infrastructure.
+
+This allows the test suite to exercise the same architectural primitives used by the production implementation.
+
+---
+
+# Testing
+
+The project uses several layers of verification.
+
+## Unit Tests
+
+Deterministic tests cover areas such as:
+
+* rtnetlink parsing
+* IPv4 parsing
+* IPv6 parsing
+* malformed netlink messages
+* malformed attributes
+* generic-netlink parsing
+* Wi-Fi information elements
+* WPA/RSN parsing
+* connection state transitions
+* profile validation
+* connection policy
+* DHCP behaviour
+* settings conversion
+* D-Bus translation
+
+## Integration Tests
+
+Linux integration testing covers real kernel behaviour including:
+
+* network namespaces
+* virtual Ethernet devices
+* DHCP
+* IP activation
+* connection teardown
+
+The repository's Rust-native network-namespace harness has successfully exercised the DHCP and IP activation path in an isolated environment.
+
+## Verification Standard
+
+The project uses:
 
 ```text
-NetworkManager-compatible API
-            |
-            v
-      compatibility layer
-            |
-            v
-       Rust domain
-            |
-            v
-      Linux backends
+cargo fmt
+cargo test
+cargo clippy
 ```
 
-This allows applications to interact with the project through familiar Linux networking APIs without requiring the internal implementation to reproduce NetworkManager's historical architecture.
-
-Compatibility will be implemented incrementally.
-
-The project will prioritize the APIs actually required by modern Linux desktop environments and applications rather than attempting to blindly reproduce every historical interface from day one.
+as the baseline Rust verification gate, supplemented by Linux integration testing where kernel behaviour is involved.
 
 ---
 
-# Desktop Compatibility
-
-The intended integration target is the existing Linux desktop ecosystem.
-
-The project is designed to eventually support applications and environments such as:
-
-* GNOME
-* KDE Plasma
-* XFCE
-* Cinnamon
-* MATE
-* LXQt
-* COSMIC
-* other environments using standard Linux networking APIs
-
-The objective is **application compatibility**, not requiring a custom desktop environment.
-
----
-
-# Security Model
+# Security and Privilege Model
 
 Network management is privileged infrastructure.
 
 The architecture therefore distinguishes between:
 
-### Observation
+### Read-only operations
 
 Examples:
 
-* enumerate devices
-* inspect addresses
-* inspect Wi-Fi state
-* inspect connection state
+* device discovery
+* link inspection
+* address inspection
+* Wi-Fi discovery
+* access-point inspection
+* connection inspection
 
 and:
 
@@ -414,201 +489,232 @@ and:
 
 Examples:
 
-* activate a connection
-* modify a profile
-* configure an interface
-* modify routes
-* modify DNS
-* manage Wi-Fi credentials
+* connection activation
+* connection deactivation
+* interface configuration
+* route changes
+* DNS changes
+* Wi-Fi authentication
+* profile modification
 
-The D-Bus layer will eventually enforce an appropriate Linux authorization model rather than treating every connected client as fully trusted.
+The long-term D-Bus architecture will use the appropriate Linux authorization mechanisms rather than treating every D-Bus client as equally trusted.
 
-Secrets are intentionally kept behind provider abstractions rather than being embedded directly into the core connection model.
-
----
-
-# Testing Philosophy
-
-The project uses several layers of verification.
-
-### Deterministic unit tests
-
-Used for:
-
-* netlink parsing
-* generic-netlink parsing
-* Wi-Fi information elements
-* connection state machines
-* profile validation
-* policy decisions
-* DHCP protocol behavior
-* translation logic
-
-### Integration tests
-
-Used for:
-
-* Linux network namespaces
-* virtual interfaces
-* DHCP
-* IP activation
-* connection teardown
-* kernel interaction
-
-### Real-system compatibility testing
-
-The project also benefits from observing real Linux systems for:
-
-* D-Bus object layouts
-* device state
-* Wi-Fi state
-* NetworkManager compatibility behavior
-* kernel networking behavior
-
-Potentially disruptive network experiments should be isolated using network namespaces or disposable virtual interfaces rather than treating a production host connection as a test fixture.
+Secrets are deliberately isolated behind secret-provider abstractions instead of being embedded directly into the core connection profile model.
 
 ---
 
-# Development Principles
+# No Shell Networking Backend
 
-The project follows several non-negotiable engineering principles:
+One of the project's explicit goals is reducing dependence on shell orchestration for networking.
 
-1. **Rust-first**
-2. **Linux-native**
-3. **No shell commands as networking backends**
-4. **Typed domain models**
-5. **Explicit subsystem boundaries**
-6. **Deterministic tests wherever possible**
-7. **Real kernel integration tests where necessary**
-8. **No unnecessary dependencies**
-9. **Security and authorization are architectural concerns**
-10. **Compatibility belongs at the API boundary**
-11. **Do not reproduce legacy implementation architecture unnecessarily**
-12. **Prefer correctness over feature-count inflation**
+Instead of:
+
+```text
+Rust
+ |
+ +--> shell
+       |
+       +--> ip
+       +--> iw
+       +--> dhclient
+       +--> other tools
+```
+
+the intended architecture is:
+
+```text
+Rust
+ |
+ +--> rtnetlink
+ +--> nl80211
+ +--> Linux sockets
+ +--> DHCP
+ +--> D-Bus
+ +--> Linux kernel
+```
+
+This makes the implementation easier to test, reason about, embed, and eventually deploy in systems with a minimal userspace.
+
+---
+
+# Compatibility Strategy
+
+The project is **not attempting to reproduce obsolete internal NetworkManager architecture**.
+
+Instead, compatibility is being approached at the interface boundary.
+
+The strategy is:
+
+1. Identify interfaces required by modern Linux applications.
+2. Preserve compatible object names and API semantics where appropriate.
+3. Implement those interfaces over the Rust domain model.
+4. Validate behaviour against current Linux networking clients.
+5. Expand compatibility based on actual application requirements.
+
+This allows the implementation underneath to remain modern while the external API remains familiar.
 
 ---
 
 # Current Limitations
 
-This is still an actively developed network-management stack.
+Despite the substantial progress, this remains an active development project.
 
-It is **not yet a drop-in replacement for NetworkManager**.
+It should **not yet be installed as a production replacement for NetworkManager on a machine where network availability is critical**.
 
-Remaining work includes substantial areas such as:
+Known areas still requiring substantial work include:
 
-* complete D-Bus compatibility
-* broader device support
-* complete route management
-* production-grade policy/reconciliation
-* robust persistent configuration
-* complete Wi-Fi connection lifecycle management
-* VPN integration
-* advanced DNS policy
-* complete desktop compatibility
-* authorization/polkit integration
-* suspend/resume handling
-* hardware lifecycle handling
+* complete NetworkManager D-Bus compatibility
+* real desktop-client compatibility testing
+* comprehensive D-Bus lifecycle behaviour
+* authorization / polkit integration
+* robust long-running daemon supervision
+* connection reconciliation
 * connection failure recovery
-* richer observability
-* long-running daemon lifecycle management
-* comprehensive compatibility testing against real applications
+* suspend/resume handling
+* hardware lifecycle management
+* complete route management
+* advanced DNS policy
+* VPN support
+* broader Wi-Fi lifecycle management
+* persistent configuration hardening
+* production deployment integration
 
-These are deliberate future milestones rather than hidden functionality.
+These are known roadmap items rather than undocumented gaps.
 
 ---
 
 # Roadmap
 
-The project is progressing toward a layered Linux network-management platform.
+## Completed Foundations
 
-### Foundation
-
-* [x] Rust 2024 foundation
+* [x] Rust 2024 migration
 * [x] Linux link enumeration
-* [x] rtnetlink link events
+* [x] rtnetlink link monitoring
 * [x] IPv4/IPv6 address enumeration
-* [x] address events
-* [x] typed networking domain
-
-### Connectivity
-
+* [x] address monitoring
+* [x] typed network events
 * [x] Wi-Fi discovery foundation
+* [x] `nl80211` integration
 * [x] access-point modelling
 * [x] Wi-Fi scanning
 * [x] connection profiles
+* [x] connection state machine
 * [x] activation architecture
 * [x] Linux IP engine
-* [x] DHCP foundation
+* [x] DHCP integration
 * [x] DNS integration
-* [x] isolated Linux integration testing
+* [x] Linux network-namespace integration testing
+* [x] Rust-native integration harness
+* [x] `nmd` management CLI
+* [x] NetworkManager-compatible D-Bus facade
 
-### Compatibility
+## Current Milestone
 
-* [ ] NetworkManager-compatible D-Bus service
-* [ ] manager/device object model
-* [ ] settings/profile compatibility
-* [ ] active connection compatibility
-* [ ] IP configuration compatibility
-* [ ] Wi-Fi D-Bus compatibility
-* [ ] desktop application compatibility testing
+**D-Bus compatibility validation and lifecycle hardening**
 
-### Production Platform
+Planned work includes:
 
-* [ ] robust reconciliation engine
-* [ ] complete authorization model
-* [ ] VPN subsystem
+* [ ] system-bus integration
+* [ ] D-Bus introspection validation
+* [ ] object lifecycle validation
+* [ ] property semantics validation
+* [ ] method compatibility validation
+* [ ] signal validation
+* [ ] real-client compatibility testing
+* [ ] compatibility gap documentation
+* [ ] daemon lifecycle hardening
+
+## Future Platform Work
+
+* [ ] complete NetworkManager API coverage
+* [ ] polkit authorization
+* [ ] robust connection reconciliation
 * [ ] advanced DNS policy
-* [ ] suspend/resume
+* [ ] VPN integration
+* [ ] suspend/resume handling
 * [ ] hardware lifecycle management
-* [ ] comprehensive recovery behavior
-* [ ] production deployment integration
+* [ ] connection recovery
+* [ ] broader desktop integration
+* [ ] production deployment hardening
 
 ---
 
-# Why This Project Exists
+# Design Principles
 
-Linux networking is already backed by extremely capable kernel APIs.
+The project follows several core engineering principles:
 
-The problem is not the kernel.
+1. **Rust-first**
+2. **Linux-native**
+3. **No shell commands as networking backends**
+4. **Typed domain models**
+5. **Clear subsystem boundaries**
+6. **Deterministic testing**
+7. **Real kernel integration testing**
+8. **Minimal unnecessary dependencies**
+9. **Explicit privilege boundaries**
+10. **Compatibility at the API boundary**
+11. **No unnecessary reproduction of legacy internals**
+12. **Correctness before feature-count inflation**
 
-The challenge is building a coherent userspace management layer that can:
+---
 
-* understand those APIs;
-* maintain consistent state;
-* coordinate multiple networking subsystems;
-* expose stable interfaces to applications;
-* handle failures correctly;
-* remain testable;
-* remain maintainable for years.
+# Intended Use
 
-`network-manager-rs` is an attempt to build that layer from the ground up in Rust.
+`network-manager-rs` is intended to become infrastructure for Linux systems that require a modern, programmable network-management stack.
 
-The strategic goal is simple:
+Potential deployment environments include:
 
-> **Modernize the implementation without breaking the Linux ecosystem around it.**
+* general Linux distributions
+* desktop Linux
+* custom Linux distributions
+* embedded Linux systems
+* minimal Linux environments
+* Rust-based operating-system projects
+* specialized Linux appliances
 
-Same ecosystem.
+The architecture is designed to remain useful whether the surrounding userspace is large and conventional or deliberately minimal.
 
-Familiar interfaces.
+---
 
-Different engine.
+# Project Maturity
+
+**Status: Active development / pre-production**
+
+The networking foundation is substantially implemented.
+
+The connection and activation layers are operational in isolated integration environments.
+
+The NetworkManager-compatible D-Bus facade is now present and entering compatibility validation.
+
+The project is **not yet a drop-in replacement for NetworkManager** and APIs may continue to evolve.
 
 ---
 
 # License
 
-`network-manager-rs` is released under the **MIT No Attribution (MIT-0)** license.
+This project is released under the **MIT No Attribution (MIT-0)** license.
 
-See [`LICENSE`](LICENSE) for the full license text.
+See [`LICENSE`](LICENSE) for the complete license text.
 
 A separate patent grant is also included in the repository.
 
 ---
 
-## Project Status
+# Contributing
 
-**Active development — experimental / pre-production.**
+Contributions and technical review are welcome.
 
-The architecture is evolving rapidly and APIs should not yet be assumed stable.
+Particularly useful areas include:
 
-Contributions, architectural review, Linux compatibility testing, and implementation feedback are welcome.
+* Linux networking expertise
+* rtnetlink / generic-netlink expertise
+* Wi-Fi and `nl80211`
+* DHCP
+* DNS
+* D-Bus
+* NetworkManager compatibility
+* desktop Linux integration
+* Linux network-namespace testing
+* Rust systems programming
+
+The preferred direction is to improve the existing architecture rather than introducing parallel implementations of functionality already provided by the core Rust domain.
