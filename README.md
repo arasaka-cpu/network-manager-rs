@@ -49,3 +49,18 @@ The daemon should grow around narrow subsystems backed by Linux-native APIs:
 - sysfs/ethtool APIs for device metadata;
 - D-Bus for desktop-facing compatibility surfaces;
 - DHCP, DNS, Wi-Fi, VPN, and policy engines as later explicit subsystems.
+
+## License and patent grant
+
+This project is dedicated under the MIT No Attribution (MIT-0) license. See the
+LICENSE file for the full text.
+
+Patent grant
+
+Subject to the terms and conditions of the MIT No Attribution (MIT-0) license,
+the copyright holder (arasaka) hereby grants to any recipient of the Work a
+perpetual, worldwide, non-exclusive, royalty-free, irrevocable patent license
+to make, have made, use, offer to sell, sell, import, and otherwise transfer the
+Work. This patent license applies only to patents that are necessarily
+infringed by the use or distribution of the Work as provided by this
+repository.
