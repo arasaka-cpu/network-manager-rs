@@ -1,12 +1,17 @@
-//! Minimal DHCPv4 test server for validating the native client end-to-end.
+//! DHCPv4 test server for the integration harness.
 //!
-//! Listens on UDP port 67, answers DISCOVER with OFFER and REQUEST with ACK
-//! (RFC 2131). Used together with `scripts/integration-netns.sh` inside an
-//! isolated network namespace; this is test infrastructure, not the daemon.
+//! Mirrors `examples/dhcp_test_server.rs` as an in-process thread so the
+//! harness can `join()` it and assert on its observed traffic. It uses the
+//! production `packet` module, so DISCOVER -> OFFER and REQUEST -> ACK are
+//! exercised with the exact same packet encoder/decoder as the real client.
 
 use std::io;
 use std::net::Ipv4Addr;
 use std::os::raw::{c_int, c_void};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+use std::sync::mpsc::Sender;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use network_manager_rs::linux::dhcp::packet::{self, DhcpMessageType, DhcpPacket};
@@ -19,9 +24,9 @@ const SO_BROADCAST: c_int = 6;
 const SO_REUSEADDR: c_int = 2;
 const SO_BINDTODEVICE: c_int = 25;
 const POLLIN: i16 = 0x0001;
-const SERVER_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 99, 0, 1);
-const OFFERED_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 99, 0, 50);
-const NETMASK: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 0);
+pub const SERVER_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 99, 0, 1);
+pub const OFFERED_ADDRESS: Ipv4Addr = Ipv4Addr::new(10, 99, 0, 50);
+pub const NETMASK: Ipv4Addr = Ipv4Addr::new(255, 255, 255, 0);
 
 #[repr(C)]
 struct SockAddrIn {
@@ -83,19 +88,34 @@ fn lease_options() -> Vec<(u8, Vec<u8>)> {
     ]
 }
 
-fn main() -> io::Result<()> {
-    let interface = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| {
-            eprintln!("usage: dhcp_test_server <ifname>");
-            std::process::exit(2);
-        });
-    let deadline = Instant::now() + Duration::from_secs(120);
+/// Runs the test server on the given interface until `stop` is set (or
+/// `deadline` elapses), reporting each observed message to `events`. Returns
+/// `Ok` once it has shut down.
+pub fn run(
+    interface: &str,
+    events: Sender<ServerEvent>,
+    stop: Arc<AtomicBool>,
+    deadline: Duration,
+) -> io::Result<()> {
+    let deadline = Instant::now() + deadline;
     // SAFETY: socket with constant args, return value checked.
     let fd = unsafe { socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }
+    let result = run_inner(fd, interface, &events, &stop, deadline);
+    // SAFETY: fd was created by socket() above.
+    unsafe { close(fd) };
+    result
+}
+
+fn run_inner(
+    fd: c_int,
+    interface: &str,
+    events: &Sender<ServerEvent>,
+    stop: &AtomicBool,
+    deadline: Instant,
+) -> io::Result<()> {
     for (level, option, value) in [(SOL_SOCKET, SO_REUSEADDR, 1), (SOL_SOCKET, SO_BROADCAST, 1)] {
         // SAFETY: value is a valid i32 buffer.
         let rc = unsafe { setsockopt(fd, level, option, (&value as *const i32).cast(), 4) };
@@ -103,11 +123,8 @@ fn main() -> io::Result<()> {
             return Err(io::Error::last_os_error());
         }
     }
-    // SO_BINDTODEVICE gives sendto an interface (oif), which lets the kernel
-    // fabricate a limited-broadcast (255.255.255.255) route without a table
-    // entry -- exactly how a client without an address receives its reply.
     let interface_bytes = format!("{interface}\0");
-    // SAFETY: interface_bytes is a NUL-terminated readable string for the call.
+    // SAFETY: interface_bytes is NUL-terminated and readable for the call.
     let rc = unsafe {
         setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, interface_bytes.as_ptr().cast(), interface_bytes.len() as u32)
     };
@@ -120,10 +137,11 @@ fn main() -> io::Result<()> {
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
+    let _ = events.send(ServerEvent::Listening);
     eprintln!("dhcp_test_server: listening on 0.0.0.0:67 via {interface}");
 
     let mut buffer = [0_u8; 4096];
-    while Instant::now() < deadline {
+    while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
         let mut poll_fd = PollFd { fd, events: POLLIN, revents: 0 };
         // SAFETY: poll_fd is a single valid PollFd.
         let ready = unsafe { poll(&mut poll_fd, 1, 1000) };
@@ -134,7 +152,7 @@ fn main() -> io::Result<()> {
             continue;
         }
         let mut address_len: u32 = size_of::<SockAddrIn>() as u32;
-        // SAFETY: buffer is writable; sockaddr is writable.
+        // SAFETY: buffer is writable and large enough for any UDP datagram.
         let n = unsafe { recvfrom(fd, buffer.as_mut_ptr().cast(), buffer.len(), 0, std::ptr::null_mut(), &mut address_len) };
         if n < 0 {
             return Err(io::Error::last_os_error());
@@ -145,27 +163,84 @@ fn main() -> io::Result<()> {
         };
         let mac = packet.hardware_address();
         let xid = packet.xid;
-        // Reply to the limited broadcast: the client has no address yet, so a
-        // subnet broadcast would not be delivered to it.
+        let requested_addr = packet
+            .get_option(50)
+            .and_then(|value| {
+                if value.len() == 4 {
+                    Some(Ipv4Addr::new(value[0], value[1], value[2], value[3]))
+                } else {
+                    None
+                }
+            });
         match packet.message_type() {
             DhcpMessageType::Discover => {
+                let _ = events.send(ServerEvent::Discover { xid, mac, requested_addr });
                 eprintln!("dhcp_test_server: DISCOVER xid=0x{xid:08x} mac={mac:02x?}");
                 let reply = DhcpPacket::build_reply(DhcpMessageType::Offer, xid, mac, OFFERED_ADDRESS, &lease_options());
                 send_to(fd, &reply, 68, Ipv4Addr::BROADCAST)?;
+                eprintln!("dhcp_test_server: sent OFFER for {OFFERED_ADDRESS}");
             }
             DhcpMessageType::Request => {
+                let _ = events.send(ServerEvent::Request { xid, mac, requested_addr });
                 eprintln!("dhcp_test_server: REQUEST xid=0x{xid:08x} mac={mac:02x?}");
                 let reply = DhcpPacket::build_reply(DhcpMessageType::Ack, xid, mac, OFFERED_ADDRESS, &lease_options());
                 send_to(fd, &reply, 68, Ipv4Addr::BROADCAST)?;
             }
             DhcpMessageType::Release => {
-                eprintln!("dhcp_test_server: RELEASE mac={mac:02x?}");
+                let _ = events.send(ServerEvent::Release { xid, mac });
             }
-            _ => eprintln!("dhcp_test_server: message type {:?}", packet.message_type()),
+            other => {
+                let _ = events.send(ServerEvent::Other { message_type: other, xid, mac });
+            }
         }
     }
-    // SAFETY: fd was created by socket() above.
-    unsafe { close(fd) };
+    let _ = events.send(ServerEvent::ShuttingDown);
     eprintln!("dhcp_test_server: shutting down");
     Ok(())
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum ServerEvent {
+    Listening,
+    Discover {
+        xid: u32,
+        mac: [u8; 6],
+        requested_addr: Option<Ipv4Addr>,
+    },
+    Request {
+        xid: u32,
+        mac: [u8; 6],
+        requested_addr: Option<Ipv4Addr>,
+    },
+    Release {
+        xid: u32,
+        mac: [u8; 6],
+    },
+    Other {
+        message_type: DhcpMessageType,
+        xid: u32,
+        mac: [u8; 6],
+    },
+    ShuttingDown,
+}
+
+/// Drains `receiver` until `ShuttingDown` (or a timeout), returning every
+/// message class observed in order.
+pub fn collect_until_shutdown(receiver: &mpsc::Receiver<ServerEvent>, timeout: Duration) -> Vec<ServerEvent> {
+    let deadline = Instant::now() + timeout;
+    let mut seen = Vec::new();
+    while let Ok(event) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        match event {
+            ServerEvent::ShuttingDown => break,
+            other => seen.push(other),
+        }
+    }
+    seen
+}
+
+/// Builds a DNS `server=` hint map for `Dhcpv4Client::acquire`.
+#[allow(dead_code)]
+pub fn option_hints() -> std::collections::HashMap<u8, Vec<u8>> {
+    std::collections::HashMap::from([(1, Vec::new()), (3, Vec::new()), (6, Vec::new()), (15, Vec::new()), (51, Vec::new())])
 }

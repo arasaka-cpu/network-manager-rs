@@ -45,7 +45,6 @@ fn main() {
                 prefix_length: Some(24),
                 gateway: Some(IpAddr::V4(Ipv4Addr::new(10, 99, 0, 1))),
                 dns_servers: vec![IpAddr::V4(Ipv4Addr::new(10, 99, 0, 1))],
-                ..IpConfig::default()
             },
             Ipv4Addr::new(10, 99, 0, 51),
         ),
