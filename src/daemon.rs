@@ -1,4 +1,6 @@
-use crate::linux::netlink::{Address, Link, NetlinkError, NetworkEvent, NetworkEventSource};
+use crate::linux::model::{
+    AccessPoint, Address, Link, NetlinkError, NetworkEvent, NetworkEventSource, WirelessInterface,
+};
 
 /// Minimal backend boundary for daemon networking state.
 pub trait NetworkBackend {
@@ -7,6 +9,14 @@ pub trait NetworkBackend {
     fn addresses(&self) -> Result<Vec<Address>, NetlinkError>;
 
     fn events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError>;
+
+    fn wifi_interfaces(&self) -> Result<Vec<WirelessInterface>, NetlinkError>;
+
+    fn access_points(&self) -> Result<Vec<AccessPoint>, NetlinkError>;
+
+    fn scan_wifi(&self) -> Result<Vec<AccessPoint>, NetlinkError>;
+
+    fn wifi_events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError>;
 }
 
 /// Daemon coordinator. It remains deliberately read-only.
@@ -32,6 +42,22 @@ where
 
     pub fn events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError> {
         self.backend.events()
+    }
+
+    pub fn wifi_interfaces(&self) -> Result<Vec<WirelessInterface>, NetlinkError> {
+        self.backend.wifi_interfaces()
+    }
+
+    pub fn access_points(&self) -> Result<Vec<AccessPoint>, NetlinkError> {
+        self.backend.access_points()
+    }
+
+    pub fn scan_wifi(&self) -> Result<Vec<AccessPoint>, NetlinkError> {
+        self.backend.scan_wifi()
+    }
+
+    pub fn wifi_events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError> {
+        self.backend.wifi_events()
     }
 
     pub fn next_event(

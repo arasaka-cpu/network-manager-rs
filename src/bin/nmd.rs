@@ -1,5 +1,7 @@
 use network_manager_rs::linux::netlink::install_sigint_shutdown_handler;
-use network_manager_rs::{AddressEventKind, Daemon, LinkEventKind, NetworkEvent, RtnetlinkBackend};
+use network_manager_rs::{
+    AddressEventKind, Daemon, LinkEventKind, NetworkEvent, RtnetlinkBackend, WifiEventKind,
+};
 
 fn main() {
     if let Err(err) = run() {
@@ -82,6 +84,20 @@ fn monitor() -> Result<(), Box<dyn std::error::Error>> {
                     event.address.interface_index,
                     event.address.address,
                     event.address.prefix_length
+                );
+            }
+            NetworkEvent::Wifi(event) => {
+                let action = match event.kind {
+                    WifiEventKind::ScanResults => "scan-results",
+                    WifiEventKind::ScanAborted => "scan-aborted",
+                };
+                let frequency = event
+                    .frequency
+                    .map(|freq| freq.to_string())
+                    .unwrap_or_else(|| "?".to_string());
+                println!(
+                    "{action}\tifindex={}\tfrequency={}",
+                    event.interface_index, frequency
                 );
             }
         }

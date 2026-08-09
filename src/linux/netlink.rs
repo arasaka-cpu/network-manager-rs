@@ -1,5 +1,4 @@
 use std::ffi::c_void;
-use std::fmt;
 use std::io;
 use std::mem::size_of;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -9,9 +8,15 @@ use std::thread;
 use std::time::Duration;
 
 use crate::daemon::NetworkBackend;
+use crate::linux::wifi;
 
-const AF_NETLINK: i32 = 16;
-const SOCK_RAW: i32 = 3;
+pub use crate::linux::model::{
+    Address, AddressEvent, AddressEventKind, Link, LinkEvent, LinkEventKind, LinkFlags,
+    NetlinkError, NetworkEvent, NetworkEventSource,
+};
+
+pub(crate) const AF_NETLINK: i32 = 16;
+pub(crate) const SOCK_RAW: i32 = 3;
 const NETLINK_ROUTE: i32 = 0;
 const NLM_F_REQUEST: u16 = 0x0001;
 const NLM_F_ROOT: u16 = 0x0100;
@@ -43,6 +48,10 @@ const O_NONBLOCK: i32 = 0o4000;
 
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+pub(crate) fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
+}
+
 #[repr(C)]
 struct SockAddrNl {
     nl_family: u16,
@@ -53,12 +62,12 @@ struct SockAddrNl {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct NlMsgHdr {
-    nlmsg_len: u32,
-    nlmsg_type: u16,
-    nlmsg_flags: u16,
-    nlmsg_seq: u32,
-    nlmsg_pid: u32,
+pub(crate) struct NlMsgHdr {
+    pub(crate) nlmsg_len: u32,
+    pub(crate) nlmsg_type: u16,
+    pub(crate) nlmsg_flags: u16,
+    pub(crate) nlmsg_seq: u32,
+    pub(crate) nlmsg_pid: u32,
 }
 
 #[repr(C)]
@@ -98,76 +107,7 @@ unsafe extern "C" {
     fn fcntl(fd: i32, cmd: i32, ...) -> i32;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Link {
-    pub index: i32,
-    pub name: String,
-    pub flags: LinkFlags,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LinkFlags(u32);
-
-impl LinkFlags {
-    pub const fn from_bits(bits: u32) -> Self {
-        Self(bits)
-    }
-
-    pub const fn bits(self) -> u32 {
-        self.0
-    }
-
-    pub const fn is_up(self) -> bool {
-        self.0 & 0x1 != 0
-    }
-
-    pub const fn is_loopback(self) -> bool {
-        self.0 & 0x8 != 0
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Address {
-    pub interface_index: u32,
-    pub address: IpAddr,
-    pub prefix_length: u8,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum NetworkEvent {
-    Link(LinkEvent),
-    Address(AddressEvent),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LinkEvent {
-    pub kind: LinkEventKind,
-    pub link: Link,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LinkEventKind {
-    Created,
-    Removed,
-    Changed,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AddressEvent {
-    pub kind: AddressEventKind,
-    pub address: Address,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AddressEventKind {
-    Added,
-    Removed,
-}
-
-pub trait NetworkEventSource {
-    fn next_event(&mut self) -> Result<Option<NetworkEvent>, NetlinkError>;
-}
-
+#[derive(Debug)]
 pub struct RtnetlinkEventSource {
     fd: OwnedFd,
     buf: Vec<u8>,
@@ -215,31 +155,6 @@ pub fn install_sigint_shutdown_handler() {
     let _previous = unsafe { signal(SIGINT, request_shutdown) };
 }
 
-#[derive(Debug)]
-pub enum NetlinkError {
-    Io(io::Error),
-    Kernel(i32),
-    MalformedMessage(&'static str),
-}
-
-impl fmt::Display for NetlinkError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(err) => write!(f, "netlink I/O failed: {err}"),
-            Self::Kernel(code) => write!(f, "kernel returned netlink error {code}"),
-            Self::MalformedMessage(msg) => write!(f, "malformed netlink message: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for NetlinkError {}
-
-impl From<io::Error> for NetlinkError {
-    fn from(value: io::Error) -> Self {
-        Self::Io(value)
-    }
-}
-
 #[derive(Default)]
 pub struct RtnetlinkBackend;
 
@@ -260,6 +175,22 @@ impl NetworkBackend for RtnetlinkBackend {
 
     fn events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError> {
         Ok(Box::new(open_link_event_source()?))
+    }
+
+    fn wifi_interfaces(&self) -> Result<Vec<crate::linux::model::WirelessInterface>, NetlinkError> {
+        wifi::wifi_interfaces()
+    }
+
+    fn access_points(&self) -> Result<Vec<crate::linux::model::AccessPoint>, NetlinkError> {
+        wifi::access_points()
+    }
+
+    fn scan_wifi(&self) -> Result<Vec<crate::linux::model::AccessPoint>, NetlinkError> {
+        wifi::scan_wifi()
+    }
+
+    fn wifi_events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError> {
+        Ok(Box::new(wifi::WifiEventSource::open()?))
     }
 }
 
@@ -365,12 +296,12 @@ impl LinkDumpRequest {
 }
 
 fn open_route_socket() -> Result<OwnedFd, NetlinkError> {
-    open_route_socket_with_groups(0)
+    open_socket_with_groups(NETLINK_ROUTE, 0)
 }
 
 fn open_link_event_source() -> Result<RtnetlinkEventSource, NetlinkError> {
     SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
-    let fd = open_route_socket_with_groups(RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR)?;
+    let fd = open_socket_with_groups(NETLINK_ROUTE, RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR)?;
     set_nonblocking(fd.as_raw_fd())?;
     Ok(RtnetlinkEventSource {
         fd,
@@ -379,9 +310,12 @@ fn open_link_event_source() -> Result<RtnetlinkEventSource, NetlinkError> {
     })
 }
 
-fn open_route_socket_with_groups(groups: u32) -> Result<OwnedFd, NetlinkError> {
+pub(crate) fn open_socket_with_groups(
+    protocol: i32,
+    groups: u32,
+) -> Result<OwnedFd, NetlinkError> {
     // SAFETY: socket is called with constant arguments and checked for a negative return value.
-    let raw = unsafe { socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE) };
+    let raw = unsafe { socket(AF_NETLINK, SOCK_RAW, protocol) };
     if raw < 0 {
         return Err(io::Error::last_os_error().into());
     }
@@ -401,21 +335,30 @@ fn open_route_socket_with_groups(groups: u32) -> Result<OwnedFd, NetlinkError> {
     Ok(fd)
 }
 
-fn set_nonblocking(fd: i32) -> Result<(), NetlinkError> {
+pub(crate) fn set_nonblocking(fd: i32) -> Result<(), NetlinkError> {
+    set_flag(fd, O_NONBLOCK, true)
+}
+
+fn set_flag(fd: i32, flag: i32, enabled: bool) -> Result<(), NetlinkError> {
     // SAFETY: fcntl is called with a valid file descriptor and F_GETFL command.
     let flags = unsafe { fcntl(fd, F_GETFL) };
     if flags < 0 {
         return Err(io::Error::last_os_error().into());
     }
+    let updated = if enabled {
+        flags | flag
+    } else {
+        flags & !flag
+    };
     // SAFETY: fcntl is called with a valid file descriptor and F_SETFL command.
-    let rc = unsafe { fcntl(fd, F_SETFL, flags | O_NONBLOCK) };
+    let rc = unsafe { fcntl(fd, F_SETFL, updated) };
     if rc < 0 {
         return Err(io::Error::last_os_error().into());
     }
     Ok(())
 }
 
-fn send_all(fd: i32, bytes: &[u8]) -> Result<(), NetlinkError> {
+pub(crate) fn send_all(fd: i32, bytes: &[u8]) -> Result<(), NetlinkError> {
     // SAFETY: bytes is a valid readable buffer for the supplied length.
     let sent = unsafe { send(fd, bytes.as_ptr().cast(), bytes.len(), 0) };
     if sent < 0 {
@@ -427,7 +370,7 @@ fn send_all(fd: i32, bytes: &[u8]) -> Result<(), NetlinkError> {
     Ok(())
 }
 
-fn recv_into(fd: i32, buf: &mut [u8]) -> Result<usize, NetlinkError> {
+pub(crate) fn recv_into(fd: i32, buf: &mut [u8]) -> Result<usize, NetlinkError> {
     // SAFETY: buf is a valid writable buffer for the supplied length.
     let n = unsafe { recv(fd, buf.as_mut_ptr().cast(), buf.len(), 0) };
     if n < 0 {
@@ -543,7 +486,7 @@ fn parse_network_events(buf: &[u8]) -> Result<Vec<NetworkEvent>, NetlinkError> {
     Ok(events)
 }
 
-fn parse_kernel_error(payload: &[u8]) -> NetlinkError {
+pub(crate) fn parse_kernel_error(payload: &[u8]) -> NetlinkError {
     if payload.len() < size_of::<i32>() {
         return NetlinkError::MalformedMessage("short nlmsgerr");
     }
@@ -635,7 +578,7 @@ fn parse_link(payload: &[u8]) -> Result<Option<Link>, NetlinkError> {
     }))
 }
 
-fn read_unaligned<T: Copy>(bytes: &[u8]) -> Result<T, NetlinkError> {
+pub(crate) fn read_unaligned<T: Copy>(bytes: &[u8]) -> Result<T, NetlinkError> {
     if bytes.len() < size_of::<T>() {
         return Err(NetlinkError::MalformedMessage("short structured data"));
     }
@@ -644,7 +587,7 @@ fn read_unaligned<T: Copy>(bytes: &[u8]) -> Result<T, NetlinkError> {
     Ok(unsafe { ptr.read_unaligned() })
 }
 
-const fn align(len: usize, to: usize) -> usize {
+pub(crate) const fn align(len: usize, to: usize) -> usize {
     (len + to - 1) & !(to - 1)
 }
 
