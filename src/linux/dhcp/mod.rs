@@ -291,7 +291,6 @@ impl DhcpClient for Dhcpv4Client {
         let offer = wait_for_packet(fd, xid, &request.interface_name, deadline)?;
         if offer.message_type() != DhcpMessageType::Offer {
             // SAFETY: fd was created by open_socket() above and is no longer needed.
-            // SAFETY: fd was created by open_socket() and is closed exactly once here.
             unsafe { close(fd) };
             return Err(DhcpError::MalformedPacket(
                 "expected a DHCPOFFER in response to DISCOVER",
@@ -307,6 +306,8 @@ impl DhcpClient for Dhcpv4Client {
             .server_identifier()
             .or_else(|| offer.source_address());
 
+        // A freshly booted client has no address yet, so it cannot unicast a
+        // REQUEST to the server; broadcast it (RFC 2131 section 4.3.2).
         let request_packet = DhcpPacket::build_request(
             xid,
             mac,
@@ -314,13 +315,7 @@ impl DhcpClient for Dhcpv4Client {
             server_identifier,
             request.hostname.as_deref(),
         );
-        let request_destination = server_identifier.unwrap_or(Ipv4Addr::BROADCAST);
-        send_packet(
-            fd,
-            &request_packet,
-            BOOTP_SERVER_PORT,
-            request_destination.octets(),
-        )?;
+        send_packet(fd, &request_packet, BOOTP_SERVER_PORT, BROADCAST)?;
 
         let ack = wait_for_packet(fd, xid, &request.interface_name, deadline)?;
         match ack.message_type() {
