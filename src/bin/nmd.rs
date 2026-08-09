@@ -1,5 +1,5 @@
 use network_manager_rs::linux::netlink::install_sigint_shutdown_handler;
-use network_manager_rs::{Daemon, LinkEventKind, NetworkEvent, RtnetlinkBackend};
+use network_manager_rs::{AddressEventKind, Daemon, LinkEventKind, NetworkEvent, RtnetlinkBackend};
 
 fn main() {
     if let Err(err) = run() {
@@ -12,10 +12,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None | Some("links") => print_links(),
+        Some("addresses") => print_addresses(),
         Some("monitor") => monitor(),
         Some("--help" | "-h") => {
             println!(
-                "Usage: nmd [links|monitor]\n\nlinks    List kernel network links via rtnetlink (read-only)\nmonitor  Monitor link events via rtnetlink multicast (read-only)"
+                "Usage: nmd [links|addresses|monitor]\n\nlinks      List kernel network links via rtnetlink (read-only)\naddresses  List kernel interface addresses via rtnetlink (read-only)\nmonitor    Monitor link and address events via rtnetlink multicast (read-only)"
             );
             Ok(())
         }
@@ -38,11 +39,22 @@ fn print_links() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn print_addresses() -> Result<(), Box<dyn std::error::Error>> {
+    let daemon = Daemon::new(RtnetlinkBackend::new());
+    for address in daemon.addresses()? {
+        println!(
+            "ifindex={}\taddress={}/{}",
+            address.interface_index, address.address, address.prefix_length
+        );
+    }
+    Ok(())
+}
+
 fn monitor() -> Result<(), Box<dyn std::error::Error>> {
     install_sigint_shutdown_handler();
     let daemon = Daemon::new(RtnetlinkBackend::new());
     let mut source = daemon.events()?;
-    eprintln!("monitoring rtnetlink link events; press Ctrl-C to stop");
+    eprintln!("monitoring rtnetlink link/address events; press Ctrl-C to stop");
     while let Some(event) = Daemon::<RtnetlinkBackend>::next_event(source.as_mut())? {
         match event {
             NetworkEvent::Link(event) => {
@@ -58,6 +70,18 @@ fn monitor() -> Result<(), Box<dyn std::error::Error>> {
                     event.link.flags.bits(),
                     event.link.flags.is_up(),
                     event.link.flags.is_loopback()
+                );
+            }
+            NetworkEvent::Address(event) => {
+                let action = match event.kind {
+                    AddressEventKind::Added => "address-added",
+                    AddressEventKind::Removed => "address-removed",
+                };
+                println!(
+                    "{action}\tifindex={}\taddress={}/{}",
+                    event.address.interface_index,
+                    event.address.address,
+                    event.address.prefix_length
                 );
             }
         }

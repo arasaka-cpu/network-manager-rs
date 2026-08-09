@@ -24,7 +24,7 @@ Acceptance criteria:
 
 ## Phase 2 architecture
 
-Phase 2 extends the same abstraction with read-only event monitoring:
+Phase 2 extended the same abstraction with read-only link event monitoring:
 
 ```text
 Linux kernel
@@ -42,22 +42,42 @@ Daemon
 nmd monitor
 ```
 
-The `NetworkBackend` trait now exposes both a snapshot API and an event-source
-API. The Linux backend subscribes to the `RTMGRP_LINK` rtnetlink multicast group
-and converts supported messages into typed `NetworkEvent::Link` values. Unknown
-message types are ignored deliberately. Malformed message boundaries, truncated
-payloads, and malformed attributes are surfaced as controlled `NetlinkError`
-values instead of panicking.
+## Address monitoring milestone
 
-Supported Phase 2 events:
+The current milestone adds read-only IPv4/IPv6 address snapshots and address
+multicast monitoring while preserving the existing daemon/backend split:
+
+```text
+Linux kernel
+↓
+NETLINK_ROUTE / RTMGRP_LINK / RTMGRP_IPV4_IFADDR / RTMGRP_IPV6_IFADDR
+↓
+RtnetlinkBackend
+↓
+typed Link and Address snapshots + typed NetworkEvent values
+↓
+NetworkBackend abstraction
+↓
+Daemon
+↓
+nmd links / nmd addresses / nmd monitor
+```
+
+The `NetworkBackend` trait exposes link snapshots, address snapshots, and an
+event-source API. The Linux backend subscribes to link, IPv4-address, and
+IPv6-address rtnetlink multicast groups and converts supported messages into
+typed `NetworkEvent` values. Unknown message types and unsupported address
+families are ignored deliberately. Malformed message boundaries, truncated
+payloads, malformed attributes, and invalid address attribute lengths are
+surfaced as controlled `NetlinkError` values instead of panicking.
+
+Supported events:
 
 - link creation (`RTM_NEWLINK` with `NLM_F_CREATE`);
 - link removal (`RTM_DELLINK`);
-- link state change (`RTM_NEWLINK` without `NLM_F_CREATE`).
-
-Address events are intentionally not included yet. They require typed address
-payload modeling, prefix handling, and separate multicast subscriptions; adding
-that now would broaden the milestone beyond link event infrastructure.
+- link state change (`RTM_NEWLINK` without `NLM_F_CREATE`);
+- address addition (`RTM_NEWADDR`) for IPv4 and IPv6;
+- address removal (`RTM_DELADDR`) for IPv4 and IPv6.
 
 ## Foundational subsystem boundaries
 
@@ -69,28 +89,30 @@ that now would broaden the milestone beyond link event infrastructure.
 
 ## Dependency policy
 
-No third-party crates are used in Phase 2. The environment still cannot reach the
-crates.io index for evaluating rtnetlink crates, and this narrow milestone only
-needs a small amount of native Linux socket API surface. The implementation uses
-direct FFI so the foundation remains small and reviewable. Future milestones may
-add well-maintained crates after verifying that they expose the needed Linux APIs
+No third-party crates are used in this milestone. The environment has repeatedly
+failed to reach the crates.io index, and this read-only milestone only needs a
+small amount of native Linux socket API surface. The implementation uses direct
+FFI so the foundation remains small and reviewable. Future milestones may add
+well-maintained crates after verifying that they expose the needed Linux APIs
 without shelling out.
 
 ## Testing strategy
 
 Parser tests use deterministic synthetic netlink fixtures. They cover link
-creation, removal, state changes, malformed/truncated headers, unsupported
-message types, malformed attributes, and multiple messages in one receive buffer.
-They do not modify host networking state.
+creation, removal, state changes, IPv4/IPv6 address enumeration, address add and
+remove events, malformed/truncated headers, unsupported message types,
+unsupported address families, malformed attributes, and multiple mixed messages
+in one receive buffer. They do not modify host networking state.
 
 ## Current limitations
 
 The daemon remains read-only. It does not configure links, addresses, routes,
 DNS, DHCP, Wi-Fi, VPNs, persistence, policy, or desktop-facing D-Bus APIs.
-Runtime monitoring currently covers link events only.
+Runtime monitoring currently covers link and interface-address events only.
 
 ## Recommended next milestone
 
-Add read-only address-event monitoring around rtnetlink address multicast groups.
-That should include typed address payloads, prefix metadata, tests for address
-message parsing, and `nmd monitor` output for address add/remove events.
+Add read-only route enumeration and route event monitoring around rtnetlink route
+messages. That should include typed route destinations, gateways, output
+interfaces, priorities/metrics, parser tests, and monitor output for route
+add/remove events.

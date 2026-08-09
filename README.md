@@ -6,13 +6,16 @@ instead of shelling out to tools such as `ip`, `ifconfig`, `nmcli`, or `iw`.
 
 ## Current phase
 
-Phase 2 establishes read-only rtnetlink event monitoring on top of the Phase 1
-snapshot foundation:
+The current milestone adds read-only rtnetlink address monitoring on top of the
+Phase 1/2 snapshot and link-event foundation:
 
-- a daemon binary (`nmd`) with non-destructive `links` and `monitor` commands;
-- a Linux networking abstraction trait for snapshots and typed events;
-- direct rtnetlink link enumeration and `RTMGRP_LINK` multicast monitoring;
+- a daemon binary (`nmd`) with non-destructive `links`, `addresses`, and
+  `monitor` commands;
+- a Linux networking abstraction trait for link/address snapshots and typed
+  events;
+- direct rtnetlink link/address enumeration and multicast monitoring;
 - typed link creation, removal, and state-change events;
+- typed IPv4/IPv6 address snapshots and address-added/address-removed events;
 - deterministic parser tests built from synthetic netlink fixtures.
 
 This phase intentionally does not configure interfaces, manage Wi-Fi, run DHCP,
@@ -31,11 +34,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ```console
 cargo run -- links
+cargo run -- addresses
 cargo run -- monitor
 ```
 
-`nmd monitor` subscribes to rtnetlink link multicast notifications and prints
-human-readable link events until interrupted with Ctrl-C.
+`nmd monitor` subscribes to rtnetlink link and address multicast notifications
+and prints human-readable events until interrupted with Ctrl-C.
 
 ## Architecture direction
 

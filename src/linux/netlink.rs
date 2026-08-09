@@ -2,6 +2,7 @@ use std::ffi::c_void;
 use std::fmt;
 use std::io;
 use std::mem::size_of;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -20,12 +21,21 @@ const NLM_F_CREATE: u16 = 0x0400;
 const RTM_GETLINK: u16 = 18;
 const RTM_NEWLINK: u16 = 16;
 const RTM_DELLINK: u16 = 17;
+const RTM_NEWADDR: u16 = 20;
+const RTM_DELADDR: u16 = 21;
+const RTM_GETADDR: u16 = 22;
 const NLMSG_DONE: u16 = 3;
 const NLMSG_ERROR: u16 = 2;
 const IFLA_IFNAME: u16 = 3;
+const IFA_ADDRESS: u16 = 1;
+const IFA_LOCAL: u16 = 2;
+const AF_INET: u8 = 2;
+const AF_INET6: u8 = 10;
 const NLMSG_ALIGNTO: usize = 4;
 const RTA_ALIGNTO: usize = 4;
 const RTMGRP_LINK: u32 = 1;
+const RTMGRP_IPV4_IFADDR: u32 = 0x10;
+const RTMGRP_IPV6_IFADDR: u32 = 0x100;
 const SIGINT: i32 = 2;
 const F_GETFL: i32 = 3;
 const F_SETFL: i32 = 4;
@@ -60,6 +70,16 @@ struct IfInfoMsg {
     ifi_index: i32,
     ifi_flags: u32,
     ifi_change: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct IfAddrMsg {
+    ifa_family: u8,
+    ifa_prefixlen: u8,
+    ifa_flags: u8,
+    ifa_scope: u8,
+    ifa_index: u32,
 }
 
 #[repr(C)]
@@ -107,8 +127,16 @@ impl LinkFlags {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Address {
+    pub interface_index: u32,
+    pub address: IpAddr,
+    pub prefix_length: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NetworkEvent {
     Link(LinkEvent),
+    Address(AddressEvent),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -122,6 +150,18 @@ pub enum LinkEventKind {
     Created,
     Removed,
     Changed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddressEvent {
+    pub kind: AddressEventKind,
+    pub address: Address,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AddressEventKind {
+    Added,
+    Removed,
 }
 
 pub trait NetworkEventSource {
@@ -214,8 +254,29 @@ impl NetworkBackend for RtnetlinkBackend {
         get_links()
     }
 
+    fn addresses(&self) -> Result<Vec<Address>, NetlinkError> {
+        get_addresses()
+    }
+
     fn events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError> {
         Ok(Box::new(open_link_event_source()?))
+    }
+}
+
+pub fn get_addresses() -> Result<Vec<Address>, NetlinkError> {
+    let fd = open_route_socket()?;
+    let request = AddressDumpRequest::new(2);
+    send_all(fd.as_raw_fd(), request.as_bytes())?;
+
+    let mut addresses = Vec::new();
+    let mut buf = vec![0_u8; 8192];
+    loop {
+        let n = recv_into(fd.as_raw_fd(), &mut buf)?;
+        let done = parse_address_messages(&buf[..n], &mut addresses)?;
+        if done {
+            addresses.sort_by_key(|address| (address.interface_index, address.address));
+            return Ok(addresses);
+        }
     }
 }
 
@@ -240,6 +301,39 @@ pub fn get_links() -> Result<Vec<Link>, NetlinkError> {
 struct LinkDumpRequest {
     header: NlMsgHdr,
     info: IfInfoMsg,
+}
+
+#[repr(C)]
+struct AddressDumpRequest {
+    header: NlMsgHdr,
+    info: IfAddrMsg,
+}
+
+impl AddressDumpRequest {
+    fn new(sequence: u32) -> Self {
+        Self {
+            header: NlMsgHdr {
+                nlmsg_len: size_of::<Self>() as u32,
+                nlmsg_type: RTM_GETADDR,
+                nlmsg_flags: NLM_F_REQUEST | NLM_F_DUMP,
+                nlmsg_seq: sequence,
+                nlmsg_pid: 0,
+            },
+            info: IfAddrMsg {
+                ifa_family: 0,
+                ifa_prefixlen: 0,
+                ifa_flags: 0,
+                ifa_scope: 0,
+                ifa_index: 0,
+            },
+        }
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        let ptr = self as *const Self as *const u8;
+        // SAFETY: AddressDumpRequest is repr(C), plain data, and lives for the returned slice lifetime.
+        unsafe { std::slice::from_raw_parts(ptr, size_of::<Self>()) }
+    }
 }
 
 impl LinkDumpRequest {
@@ -276,7 +370,7 @@ fn open_route_socket() -> Result<OwnedFd, NetlinkError> {
 
 fn open_link_event_source() -> Result<RtnetlinkEventSource, NetlinkError> {
     SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
-    let fd = open_route_socket_with_groups(RTMGRP_LINK)?;
+    let fd = open_route_socket_with_groups(RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR)?;
     set_nonblocking(fd.as_raw_fd())?;
     Ok(RtnetlinkEventSource {
         fd,
@@ -366,6 +460,30 @@ fn parse_link_messages(buf: &[u8], links: &mut Vec<Link>) -> Result<bool, Netlin
     Ok(false)
 }
 
+fn parse_address_messages(buf: &[u8], addresses: &mut Vec<Address>) -> Result<bool, NetlinkError> {
+    let mut offset = 0;
+    while offset + size_of::<NlMsgHdr>() <= buf.len() {
+        let header = read_unaligned::<NlMsgHdr>(&buf[offset..])?;
+        let len = header.nlmsg_len as usize;
+        if len < size_of::<NlMsgHdr>() || offset + len > buf.len() {
+            return Err(NetlinkError::MalformedMessage("invalid nlmsghdr length"));
+        }
+        let payload = &buf[offset + size_of::<NlMsgHdr>()..offset + len];
+        match header.nlmsg_type {
+            NLMSG_DONE => return Ok(true),
+            NLMSG_ERROR => return Err(parse_kernel_error(payload)),
+            RTM_NEWADDR => {
+                if let Some(address) = parse_address(payload)? {
+                    addresses.push(address);
+                }
+            }
+            _ => {}
+        }
+        offset += align(len, NLMSG_ALIGNTO);
+    }
+    Ok(false)
+}
+
 fn parse_network_events(buf: &[u8]) -> Result<Vec<NetworkEvent>, NetlinkError> {
     let mut events = Vec::new();
     let mut offset = 0;
@@ -397,6 +515,22 @@ fn parse_network_events(buf: &[u8]) -> Result<Vec<NetworkEvent>, NetlinkError> {
                     }));
                 }
             }
+            RTM_NEWADDR => {
+                if let Some(address) = parse_address(payload)? {
+                    events.push(NetworkEvent::Address(AddressEvent {
+                        kind: AddressEventKind::Added,
+                        address,
+                    }));
+                }
+            }
+            RTM_DELADDR => {
+                if let Some(address) = parse_address(payload)? {
+                    events.push(NetworkEvent::Address(AddressEvent {
+                        kind: AddressEventKind::Removed,
+                        address,
+                    }));
+                }
+            }
             _ => {}
         }
         offset += align(len, NLMSG_ALIGNTO);
@@ -416,6 +550,62 @@ fn parse_kernel_error(payload: &[u8]) -> NetlinkError {
     let mut bytes = [0_u8; 4];
     bytes.copy_from_slice(&payload[..4]);
     NetlinkError::Kernel(i32::from_ne_bytes(bytes))
+}
+
+fn parse_address(payload: &[u8]) -> Result<Option<Address>, NetlinkError> {
+    if payload.len() < size_of::<IfAddrMsg>() {
+        return Err(NetlinkError::MalformedMessage("short ifaddrmsg"));
+    }
+    let info = read_unaligned::<IfAddrMsg>(payload)?;
+    let expected_len = match info.ifa_family {
+        AF_INET => 4,
+        AF_INET6 => 16,
+        _ => return Ok(None),
+    };
+    let mut address_bytes = None;
+    let mut offset = size_of::<IfAddrMsg>();
+    while offset + size_of::<RtAttr>() <= payload.len() {
+        let attr = read_unaligned::<RtAttr>(&payload[offset..])?;
+        let len = attr.rta_len as usize;
+        if len < size_of::<RtAttr>() || offset + len > payload.len() {
+            return Err(NetlinkError::MalformedMessage("invalid rtattr length"));
+        }
+        let value = &payload[offset + size_of::<RtAttr>()..offset + len];
+        if matches!(attr.rta_type, IFA_LOCAL | IFA_ADDRESS) && address_bytes.is_none() {
+            if value.len() != expected_len {
+                return Err(NetlinkError::MalformedMessage(
+                    "invalid address attribute length",
+                ));
+            }
+            address_bytes = Some(value.to_vec());
+        }
+        offset += align(len, RTA_ALIGNTO);
+    }
+
+    let Some(address_bytes) = address_bytes else {
+        return Ok(None);
+    };
+
+    let address = match info.ifa_family {
+        AF_INET => IpAddr::V4(Ipv4Addr::new(
+            address_bytes[0],
+            address_bytes[1],
+            address_bytes[2],
+            address_bytes[3],
+        )),
+        AF_INET6 => {
+            let mut octets = [0_u8; 16];
+            octets.copy_from_slice(&address_bytes);
+            IpAddr::V6(Ipv6Addr::from(octets))
+        }
+        _ => return Ok(None),
+    };
+
+    Ok(Some(Address {
+        interface_index: info.ifa_index,
+        address,
+        prefix_length: info.ifa_prefixlen,
+    }))
 }
 
 fn parse_link(payload: &[u8]) -> Result<Option<Link>, NetlinkError> {
@@ -524,6 +714,48 @@ mod tests {
                 nlmsg_pid: 0,
             },
         );
+        message
+    }
+
+    fn address_message(
+        message_type: u16,
+        family: u8,
+        index: u32,
+        prefix_length: u8,
+        address: &[u8],
+    ) -> Vec<u8> {
+        let attr_len = size_of::<RtAttr>() + address.len();
+        let payload_len = size_of::<IfAddrMsg>() + align(attr_len, RTA_ALIGNTO);
+        let mut message = Vec::new();
+        push_struct(
+            &mut message,
+            &NlMsgHdr {
+                nlmsg_len: (size_of::<NlMsgHdr>() + payload_len) as u32,
+                nlmsg_type: message_type,
+                nlmsg_flags: 0,
+                nlmsg_seq: 1,
+                nlmsg_pid: 0,
+            },
+        );
+        push_struct(
+            &mut message,
+            &IfAddrMsg {
+                ifa_family: family,
+                ifa_prefixlen: prefix_length,
+                ifa_flags: 0,
+                ifa_scope: 0,
+                ifa_index: index,
+            },
+        );
+        push_struct(
+            &mut message,
+            &RtAttr {
+                rta_len: attr_len as u16,
+                rta_type: IFA_LOCAL,
+            },
+        );
+        message.extend_from_slice(address);
+        message.resize(size_of::<NlMsgHdr>() + payload_len, 0);
         message
     }
 
@@ -664,6 +896,179 @@ mod tests {
             events[1],
             NetworkEvent::Link(LinkEvent {
                 kind: LinkEventKind::Removed,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_ipv4_address_enumeration() {
+        let mut message = address_message(RTM_NEWADDR, AF_INET, 2, 24, &[192, 0, 2, 10]);
+        push_struct(
+            &mut message,
+            &NlMsgHdr {
+                nlmsg_len: size_of::<NlMsgHdr>() as u32,
+                nlmsg_type: NLMSG_DONE,
+                nlmsg_flags: 0,
+                nlmsg_seq: 1,
+                nlmsg_pid: 0,
+            },
+        );
+        let mut addresses = Vec::new();
+        assert!(parse_address_messages(&message, &mut addresses).unwrap());
+        assert_eq!(
+            addresses,
+            vec![Address {
+                interface_index: 2,
+                address: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+                prefix_length: 24,
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_ipv6_address_enumeration() {
+        let octets = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        let mut message = address_message(RTM_NEWADDR, AF_INET6, 3, 64, &octets);
+        push_struct(
+            &mut message,
+            &NlMsgHdr {
+                nlmsg_len: size_of::<NlMsgHdr>() as u32,
+                nlmsg_type: NLMSG_DONE,
+                nlmsg_flags: 0,
+                nlmsg_seq: 1,
+                nlmsg_pid: 0,
+            },
+        );
+        let mut addresses = Vec::new();
+        assert!(parse_address_messages(&message, &mut addresses).unwrap());
+        assert_eq!(
+            addresses,
+            vec![Address {
+                interface_index: 3,
+                address: IpAddr::V6(Ipv6Addr::from(octets)),
+                prefix_length: 64,
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_address_added_event() {
+        let events = parse_network_events(&address_message(
+            RTM_NEWADDR,
+            AF_INET,
+            4,
+            24,
+            &[198, 51, 100, 7],
+        ))
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![NetworkEvent::Address(AddressEvent {
+                kind: AddressEventKind::Added,
+                address: Address {
+                    interface_index: 4,
+                    address: IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)),
+                    prefix_length: 24,
+                },
+            })]
+        );
+    }
+
+    #[test]
+    fn parses_address_removed_event() {
+        let events = parse_network_events(&address_message(
+            RTM_DELADDR,
+            AF_INET,
+            5,
+            32,
+            &[203, 0, 113, 9],
+        ))
+        .unwrap();
+        assert_eq!(
+            events,
+            vec![NetworkEvent::Address(AddressEvent {
+                kind: AddressEventKind::Removed,
+                address: Address {
+                    interface_index: 5,
+                    address: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)),
+                    prefix_length: 32,
+                },
+            })]
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_address_message() {
+        let mut message = Vec::new();
+        push_struct(
+            &mut message,
+            &NlMsgHdr {
+                nlmsg_len: (size_of::<NlMsgHdr>() + 2) as u32,
+                nlmsg_type: RTM_NEWADDR,
+                nlmsg_flags: 0,
+                nlmsg_seq: 1,
+                nlmsg_pid: 0,
+            },
+        );
+        message.extend_from_slice(&[AF_INET, 24]);
+        assert!(matches!(
+            parse_network_events(&message),
+            Err(NetlinkError::MalformedMessage(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_malformed_address_attributes() {
+        let mut message = address_message(RTM_NEWADDR, AF_INET, 6, 24, &[192, 0, 2, 1]);
+        let attr_offset = size_of::<NlMsgHdr>() + size_of::<IfAddrMsg>();
+        message[attr_offset] = 1;
+        message[attr_offset + 1] = 0;
+        assert!(matches!(
+            parse_network_events(&message),
+            Err(NetlinkError::MalformedMessage(_))
+        ));
+    }
+
+    #[test]
+    fn ignores_unsupported_address_family() {
+        let events =
+            parse_network_events(&address_message(RTM_NEWADDR, 42, 7, 24, &[1, 2, 3, 4])).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn parses_multiple_mixed_messages_in_one_buffer() {
+        let mut message = link_message(RTM_NEWLINK, NLM_F_CREATE, 21, b"mix0\0", 0x1);
+        message.extend_from_slice(&address_message(
+            RTM_NEWADDR,
+            AF_INET,
+            21,
+            24,
+            &[10, 0, 0, 1],
+        ));
+        message.extend_from_slice(&address_message(
+            RTM_DELADDR,
+            AF_INET6,
+            21,
+            64,
+            &[0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+        ));
+
+        let events = parse_network_events(&message).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], NetworkEvent::Link(_)));
+        assert!(matches!(
+            events[1],
+            NetworkEvent::Address(AddressEvent {
+                kind: AddressEventKind::Added,
+                ..
+            })
+        ));
+        assert!(matches!(
+            events[2],
+            NetworkEvent::Address(AddressEvent {
+                kind: AddressEventKind::Removed,
                 ..
             })
         ));

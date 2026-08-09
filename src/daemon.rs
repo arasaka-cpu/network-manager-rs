@@ -1,13 +1,15 @@
-use crate::linux::netlink::{Link, NetlinkError, NetworkEvent, NetworkEventSource};
+use crate::linux::netlink::{Address, Link, NetlinkError, NetworkEvent, NetworkEventSource};
 
 /// Minimal backend boundary for daemon networking state.
 pub trait NetworkBackend {
     fn links(&self) -> Result<Vec<Link>, NetlinkError>;
 
+    fn addresses(&self) -> Result<Vec<Address>, NetlinkError>;
+
     fn events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError>;
 }
 
-/// Daemon coordinator. Phase 2 remains deliberately read-only.
+/// Daemon coordinator. It remains deliberately read-only.
 pub struct Daemon<B> {
     backend: B,
 }
@@ -22,6 +24,10 @@ where
 
     pub fn links(&self) -> Result<Vec<Link>, NetlinkError> {
         self.backend.links()
+    }
+
+    pub fn addresses(&self) -> Result<Vec<Address>, NetlinkError> {
+        self.backend.addresses()
     }
 
     pub fn events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError> {

@@ -5,6 +5,6 @@ pub mod linux;
 
 pub use daemon::{Daemon, NetworkBackend};
 pub use linux::netlink::{
-    Link, LinkEvent, LinkEventKind, LinkFlags, NetlinkError, NetworkEvent, NetworkEventSource,
-    RtnetlinkBackend,
+    Address, AddressEvent, AddressEventKind, Link, LinkEvent, LinkEventKind, LinkFlags,
+    NetlinkError, NetworkEvent, NetworkEventSource, RtnetlinkBackend,
 };
