@@ -46,7 +46,10 @@ impl From<io::Error> for StoreError {
 }
 
 /// Storage boundary for connection profiles.
-pub trait ProfileStore {
+///
+/// `Send` is required so a daemon holding `Box<dyn ProfileStore>` can be
+/// shared across the D-Bus compatibility layer's object server threads.
+pub trait ProfileStore: Send {
     /// Lists all profiles, deterministically ordered by id.
     fn list(&self) -> Result<Vec<ConnectionProfile>, StoreError>;
 

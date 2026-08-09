@@ -44,7 +44,7 @@ pub enum SecretError {
 /// The concrete implementation is intentionally left to a later milestone so
 /// that this project can coordinate with the existing Linux secret-management
 /// and Wi-Fi authentication infrastructure.
-pub trait SecretProvider {
+pub trait SecretProvider: Send {
     /// Retrieves the secret bytes for `reference`, if one exists.
     fn retrieve(&self, reference: &SecretReference) -> Result<Option<Vec<u8>>, SecretError>;
 }

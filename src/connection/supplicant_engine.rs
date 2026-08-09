@@ -249,7 +249,7 @@ mod tests {
         ifname: String,
         add_ok: bool,
         completed: bool,
-        data: std::rc::Rc<std::cell::RefCell<RecordingData>>,
+        data: std::sync::Arc<std::sync::Mutex<RecordingData>>,
     }
 
     impl RecordingControl {
@@ -258,7 +258,7 @@ mod tests {
                 ifname: "wlan0".to_string(),
                 add_ok: true,
                 completed: true,
-                data: std::rc::Rc::new(std::cell::RefCell::new(RecordingData::default())),
+                data: std::sync::Arc::new(std::sync::Mutex::new(RecordingData::default())),
             }
         }
     }
@@ -280,7 +280,7 @@ mod tests {
             if !self.add_ok {
                 return Err(SupplicantError::NetworkRejected("simulated".to_string()));
             }
-            let mut data = self.data.borrow_mut();
+            let mut data = self.data.lock().unwrap();
             data.added_ssid = Some(ssid.clone());
             data.added_key_mgmt = Some(key_mgmt.to_string());
             data.added_psk = psk.map(|bytes| bytes.to_vec());
@@ -291,20 +291,21 @@ mod tests {
         }
 
         fn select_network(&mut self, network_path: &str) -> Result<(), SupplicantError> {
-            self.data.borrow_mut().selected = Some(network_path.to_string());
+            self.data.lock().unwrap().selected = Some(network_path.to_string());
             Ok(())
         }
 
         fn remove_network(&mut self, network_path: &str) -> Result<(), SupplicantError> {
             self.data
-                .borrow_mut()
+                .lock()
+                .unwrap()
                 .removed
                 .push(network_path.to_string());
             Ok(())
         }
 
         fn disconnect(&mut self) -> Result<(), SupplicantError> {
-            self.data.borrow_mut().disconnect_count += 1;
+            self.data.lock().unwrap().disconnect_count += 1;
             Ok(())
         }
 
@@ -360,7 +361,7 @@ mod tests {
             .activate(&psk_profile("home"), &wifi_device())
             .unwrap();
 
-        let data = data.borrow();
+        let data = data.lock().unwrap();
         assert_eq!(data.added_ssid, Some(Ssid::from_bytes(b"home").unwrap()));
         assert_eq!(data.added_key_mgmt.as_deref(), Some("WPA-PSK"));
         assert_eq!(data.added_psk.as_deref(), Some(PASSPHRASE.as_bytes()));
@@ -381,7 +382,7 @@ mod tests {
             .activate(&open_profile("open"), &wifi_device())
             .unwrap();
 
-        let data = data.borrow();
+        let data = data.lock().unwrap();
         assert_eq!(data.added_key_mgmt.as_deref(), Some("NONE"));
         assert!(data.added_psk.is_none());
     }
@@ -401,7 +402,7 @@ mod tests {
         assert!(matches!(err, ActivationError::Engine(_)));
         assert!(!err.to_string().contains(PASSPHRASE));
         assert!(engine.active_network.is_none());
-        assert_eq!(data.borrow().removed.len(), 1, "failed network is removed");
+        assert_eq!(data.lock().unwrap().removed.len(), 1, "failed network is removed");
     }
 
     #[test]
@@ -483,8 +484,8 @@ mod tests {
         engine.activate(&profile, &wifi_device()).unwrap();
 
         engine.deactivate(&profile).unwrap();
-        assert_eq!(data.borrow().disconnect_count, 1);
-        assert_eq!(data.borrow().removed.len(), 1);
+        assert_eq!(data.lock().unwrap().disconnect_count, 1);
+        assert_eq!(data.lock().unwrap().removed.len(), 1);
         assert!(engine.active_network.is_none());
     }
 
@@ -522,7 +523,7 @@ mod tests {
         }
         engine.activate(&profile, &wifi_device()).unwrap();
 
-        let data = data.borrow();
+        let data = data.lock().unwrap();
         assert_eq!(data.added_hidden, Some(true));
         assert_eq!(data.added_bssid, Some(bssid));
     }

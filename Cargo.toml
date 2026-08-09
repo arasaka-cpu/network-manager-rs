@@ -17,7 +17,7 @@ path = "src/bin/nmd.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
-zbus = "5"
+zbus = { version = "5", features = ["p2p"] }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

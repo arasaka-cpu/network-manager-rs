@@ -93,9 +93,9 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxActivationEngine<C, D
 
 impl<C, D, N> ActivationEngine for LinuxActivationEngine<C, D, N>
 where
-    C: IpConfigurator,
-    D: DhcpClient,
-    N: DnsManager,
+    C: IpConfigurator + Send,
+    D: DhcpClient + Send,
+    N: DnsManager + Send,
 {
     fn activate(
         &mut self,
@@ -158,9 +158,8 @@ mod tests {
     use crate::connection::secrets::{SecretError, SecretProvider, SecretReference};
     use crate::linux::model::{Bssid, Route, Ssid};
     use crate::linux::supplicant::{SupplicantControl, SupplicantError};
-    use std::cell::RefCell;
     use std::net::Ipv4Addr;
-    use std::rc::Rc;
+    use std::sync::{Arc, Mutex};
 
     // --- Scripted backends with shared recording state --------------------
 
@@ -176,7 +175,7 @@ mod tests {
     #[derive(Clone)]
     struct OkControl {
         ifname: String,
-        record: Rc<RefCell<Recording>>,
+        record: Arc<Mutex<Recording>>,
     }
 
     impl SupplicantControl for OkControl {
@@ -201,18 +200,18 @@ mod tests {
         }
 
         fn remove_network(&mut self, _network_path: &str) -> Result<(), SupplicantError> {
-            self.record.borrow_mut().networks_removed += 1;
+            self.record.lock().unwrap().networks_removed += 1;
             Ok(())
         }
 
         fn disconnect(&mut self) -> Result<(), SupplicantError> {
-            self.record.borrow_mut().disconnect_count += 1;
-            self.record.borrow_mut().connected = false;
+            self.record.lock().unwrap().disconnect_count += 1;
+            self.record.lock().unwrap().connected = false;
             Ok(())
         }
 
         fn wait_for_completed(&mut self, _timeout: Duration) -> Result<(), SupplicantError> {
-            self.record.borrow_mut().connected = true;
+            self.record.lock().unwrap().connected = true;
             Ok(())
         }
     }
@@ -264,7 +263,7 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct FakeDhcpClient {
-        record: Rc<RefCell<Recording>>,
+        record: Arc<Mutex<Recording>>,
     }
 
     impl DhcpClient for FakeDhcpClient {
@@ -272,7 +271,7 @@ mod tests {
             &mut self,
             request: &DhcpRequest,
         ) -> Result<DhcpLease, DhcpError> {
-            let mut record = self.record.borrow_mut();
+            let mut record = self.record.lock().unwrap();
             if record.fail_dhcp {
                 return Err(DhcpError::Timeout {
                     interface: request.interface_name.clone(),
@@ -319,12 +318,12 @@ mod tests {
     /// A harness bundling the composite engine with its shared recording state.
     struct Harness {
         engine: LinuxActivationEngine<FakeIpConfigurator, FakeDhcpClient, FakeDnsManager>,
-        record: Rc<RefCell<Recording>>,
+        record: Arc<Mutex<Recording>>,
     }
 
     impl Harness {
         fn new() -> Self {
-            let record = Rc::new(RefCell::new(Recording::default()));
+            let record = Arc::new(Mutex::new(Recording::default()));
             let ip = LinuxIpEngine::with_components(
                 FakeIpConfigurator,
                 FakeDhcpClient { record: record.clone() },
@@ -377,7 +376,7 @@ mod tests {
             .activate(&profile, &loopback_device())
             .unwrap();
 
-        let record = harness.record.borrow();
+        let record = harness.record.lock().unwrap();
         assert!(record.connected, "supplicant reached completed");
         assert_eq!(record.dhcp_acquire_count, 1, "IP ran after the link");
 
@@ -386,7 +385,7 @@ mod tests {
         drop(record);
 
         harness.engine.deactivate(&profile).unwrap();
-        let record = harness.record.borrow();
+        let record = harness.record.lock().unwrap();
         assert_eq!(record.disconnect_count, 1);
         assert_eq!(record.networks_removed, 1);
     }
@@ -394,7 +393,7 @@ mod tests {
     #[test]
     fn ip_failure_rolls_back_the_supplicant_link() {
         let mut harness = Harness::new();
-        harness.record.borrow_mut().fail_dhcp = true;
+        harness.record.lock().unwrap().fail_dhcp = true;
         let profile = wifi_profile();
 
         let err = harness
@@ -403,7 +402,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, ActivationError::Engine(_)));
 
-        let record = harness.record.borrow();
+        let record = harness.record.lock().unwrap();
         assert_eq!(record.disconnect_count, 1, "link is torn down on IP failure");
         assert_eq!(record.networks_removed, 1);
     }
@@ -420,7 +419,7 @@ mod tests {
 
         // teardown ran: the DHCP release + route removal went through the fake
         // configurator without error, which is what teardown() calls.
-        let record = harness.record.borrow();
+        let record = harness.record.lock().unwrap();
         assert_eq!(record.disconnect_count, 1);
         drop(record);
     }

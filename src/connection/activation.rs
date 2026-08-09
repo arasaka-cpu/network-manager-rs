@@ -104,7 +104,10 @@ impl std::error::Error for ActivationError {}
 /// succeeded; the manager will not fabricate an `Activated` state otherwise.
 /// On success [`ActivationEngine::activate`] returns the configuration that was
 /// actually installed so callers can render it without probing the kernel.
-pub trait ActivationEngine {
+///
+/// `Send` is required so a daemon holding `Box<dyn ActivationEngine>` can be
+/// shared across the D-Bus compatibility layer's object server threads.
+pub trait ActivationEngine: Send {
     fn activate(
         &mut self,
         profile: &ConnectionProfile,

@@ -94,7 +94,7 @@ impl std::error::Error for SupplicantError {}
 /// real [`WpaSupplicant`] is exercised only against a real bus. The key
 /// management mode is passed as the raw supplicant string (for example
 /// `"WPA-PSK"`) so this trait stays independent of the connection layer.
-pub trait SupplicantControl {
+pub trait SupplicantControl: Send {
     /// The wireless interface name this control is bound to.
     fn ifname(&self) -> &str;
 
