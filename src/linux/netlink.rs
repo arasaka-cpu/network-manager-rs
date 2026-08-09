@@ -3,6 +3,9 @@ use std::fmt;
 use std::io;
 use std::mem::size_of;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use crate::daemon::NetworkBackend;
 
@@ -13,13 +16,22 @@ const NLM_F_REQUEST: u16 = 0x0001;
 const NLM_F_ROOT: u16 = 0x0100;
 const NLM_F_MATCH: u16 = 0x0200;
 const NLM_F_DUMP: u16 = NLM_F_ROOT | NLM_F_MATCH;
+const NLM_F_CREATE: u16 = 0x0400;
 const RTM_GETLINK: u16 = 18;
 const RTM_NEWLINK: u16 = 16;
+const RTM_DELLINK: u16 = 17;
 const NLMSG_DONE: u16 = 3;
 const NLMSG_ERROR: u16 = 2;
 const IFLA_IFNAME: u16 = 3;
 const NLMSG_ALIGNTO: usize = 4;
 const RTA_ALIGNTO: usize = 4;
+const RTMGRP_LINK: u32 = 1;
+const SIGINT: i32 = 2;
+const F_GETFL: i32 = 3;
+const F_SETFL: i32 = 4;
+const O_NONBLOCK: i32 = 0o4000;
+
+static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 struct SockAddrNl {
@@ -62,6 +74,8 @@ unsafe extern "C" {
     fn bind(sockfd: i32, addr: *const SockAddrNl, addrlen: u32) -> i32;
     fn send(sockfd: i32, buf: *const c_void, len: usize, flags: i32) -> isize;
     fn recv(sockfd: i32, buf: *mut c_void, len: usize, flags: i32) -> isize;
+    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,6 +104,75 @@ impl LinkFlags {
     pub const fn is_loopback(self) -> bool {
         self.0 & 0x8 != 0
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NetworkEvent {
+    Link(LinkEvent),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkEvent {
+    pub kind: LinkEventKind,
+    pub link: Link,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinkEventKind {
+    Created,
+    Removed,
+    Changed,
+}
+
+pub trait NetworkEventSource {
+    fn next_event(&mut self) -> Result<Option<NetworkEvent>, NetlinkError>;
+}
+
+pub struct RtnetlinkEventSource {
+    fd: OwnedFd,
+    buf: Vec<u8>,
+    pending: Vec<NetworkEvent>,
+}
+
+impl NetworkEventSource for RtnetlinkEventSource {
+    fn next_event(&mut self) -> Result<Option<NetworkEvent>, NetlinkError> {
+        loop {
+            if let Some(event) = self.pending.pop() {
+                return Ok(Some(event));
+            }
+            if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+                return Ok(None);
+            }
+            match recv_into(self.fd.as_raw_fd(), &mut self.buf) {
+                Ok(n) => {
+                    let mut events = parse_network_events(&self.buf[..n])?;
+                    events.reverse();
+                    self.pending = events;
+                }
+                Err(NetlinkError::Io(err))
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    if SHUTDOWN_REQUESTED.load(Ordering::SeqCst) {
+                        return Ok(None);
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+}
+
+extern "C" fn request_shutdown(_signum: i32) {
+    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+pub fn install_sigint_shutdown_handler() {
+    // SAFETY: request_shutdown is an extern "C" signal handler that only stores to an AtomicBool.
+    let _previous = unsafe { signal(SIGINT, request_shutdown) };
 }
 
 #[derive(Debug)]
@@ -129,6 +212,10 @@ impl RtnetlinkBackend {
 impl NetworkBackend for RtnetlinkBackend {
     fn links(&self) -> Result<Vec<Link>, NetlinkError> {
         get_links()
+    }
+
+    fn events(&self) -> Result<Box<dyn NetworkEventSource>, NetlinkError> {
+        Ok(Box::new(open_link_event_source()?))
     }
 }
 
@@ -184,6 +271,21 @@ impl LinkDumpRequest {
 }
 
 fn open_route_socket() -> Result<OwnedFd, NetlinkError> {
+    open_route_socket_with_groups(0)
+}
+
+fn open_link_event_source() -> Result<RtnetlinkEventSource, NetlinkError> {
+    SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+    let fd = open_route_socket_with_groups(RTMGRP_LINK)?;
+    set_nonblocking(fd.as_raw_fd())?;
+    Ok(RtnetlinkEventSource {
+        fd,
+        buf: vec![0_u8; 8192],
+        pending: Vec::new(),
+    })
+}
+
+fn open_route_socket_with_groups(groups: u32) -> Result<OwnedFd, NetlinkError> {
     // SAFETY: socket is called with constant arguments and checked for a negative return value.
     let raw = unsafe { socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE) };
     if raw < 0 {
@@ -195,7 +297,7 @@ fn open_route_socket() -> Result<OwnedFd, NetlinkError> {
         nl_family: AF_NETLINK as u16,
         nl_pad: 0,
         nl_pid: 0,
-        nl_groups: 0,
+        nl_groups: groups,
     };
     // SAFETY: addr points to a valid SockAddrNl for the duration of the call.
     let rc = unsafe { bind(fd.as_raw_fd(), &addr, size_of::<SockAddrNl>() as u32) };
@@ -203,6 +305,20 @@ fn open_route_socket() -> Result<OwnedFd, NetlinkError> {
         return Err(io::Error::last_os_error().into());
     }
     Ok(fd)
+}
+
+fn set_nonblocking(fd: i32) -> Result<(), NetlinkError> {
+    // SAFETY: fcntl is called with a valid file descriptor and F_GETFL command.
+    let flags = unsafe { fcntl(fd, F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    // SAFETY: fcntl is called with a valid file descriptor and F_SETFL command.
+    let rc = unsafe { fcntl(fd, F_SETFL, flags | O_NONBLOCK) };
+    if rc < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(())
 }
 
 fn send_all(fd: i32, bytes: &[u8]) -> Result<(), NetlinkError> {
@@ -248,6 +364,49 @@ fn parse_link_messages(buf: &[u8], links: &mut Vec<Link>) -> Result<bool, Netlin
         offset += align(len, NLMSG_ALIGNTO);
     }
     Ok(false)
+}
+
+fn parse_network_events(buf: &[u8]) -> Result<Vec<NetworkEvent>, NetlinkError> {
+    let mut events = Vec::new();
+    let mut offset = 0;
+    while offset + size_of::<NlMsgHdr>() <= buf.len() {
+        let header = read_unaligned::<NlMsgHdr>(&buf[offset..])?;
+        let len = header.nlmsg_len as usize;
+        if len < size_of::<NlMsgHdr>() || offset + len > buf.len() {
+            return Err(NetlinkError::MalformedMessage("invalid nlmsghdr length"));
+        }
+        let payload = &buf[offset + size_of::<NlMsgHdr>()..offset + len];
+        match header.nlmsg_type {
+            NLMSG_DONE => return Ok(events),
+            NLMSG_ERROR => return Err(parse_kernel_error(payload)),
+            RTM_NEWLINK => {
+                if let Some(link) = parse_link(payload)? {
+                    let kind = if header.nlmsg_flags & NLM_F_CREATE != 0 {
+                        LinkEventKind::Created
+                    } else {
+                        LinkEventKind::Changed
+                    };
+                    events.push(NetworkEvent::Link(LinkEvent { kind, link }));
+                }
+            }
+            RTM_DELLINK => {
+                if let Some(link) = parse_link(payload)? {
+                    events.push(NetworkEvent::Link(LinkEvent {
+                        kind: LinkEventKind::Removed,
+                        link,
+                    }));
+                }
+            }
+            _ => {}
+        }
+        offset += align(len, NLMSG_ALIGNTO);
+    }
+
+    if offset != buf.len() {
+        return Err(NetlinkError::MalformedMessage("trailing partial nlmsghdr"));
+    }
+
+    Ok(events)
 }
 
 fn parse_kernel_error(payload: &[u8]) -> NetlinkError {
@@ -310,28 +469,34 @@ mod tests {
         buf.extend_from_slice(bytes);
     }
 
-    #[test]
-    fn parses_link_dump_fixture() {
-        let mut message = Vec::new();
-        let name = b"eth0\0";
+    fn link_message(
+        message_type: u16,
+        flags: u16,
+        index: i32,
+        name: &[u8],
+        link_flags: u32,
+    ) -> Vec<u8> {
         let attr_len = size_of::<RtAttr>() + name.len();
         let payload_len = size_of::<IfInfoMsg>() + align(attr_len, RTA_ALIGNTO);
-        let header = NlMsgHdr {
-            nlmsg_len: (size_of::<NlMsgHdr>() + payload_len) as u32,
-            nlmsg_type: RTM_NEWLINK,
-            nlmsg_flags: 0,
-            nlmsg_seq: 1,
-            nlmsg_pid: 0,
-        };
-        push_struct(&mut message, &header);
+        let mut message = Vec::new();
+        push_struct(
+            &mut message,
+            &NlMsgHdr {
+                nlmsg_len: (size_of::<NlMsgHdr>() + payload_len) as u32,
+                nlmsg_type: message_type,
+                nlmsg_flags: flags,
+                nlmsg_seq: 1,
+                nlmsg_pid: 0,
+            },
+        );
         push_struct(
             &mut message,
             &IfInfoMsg {
                 ifi_family: 0,
                 __ifi_pad: 0,
                 ifi_type: 1,
-                ifi_index: 7,
-                ifi_flags: 0x1,
+                ifi_index: index,
+                ifi_flags: link_flags,
                 ifi_change: 0,
             },
         );
@@ -344,6 +509,27 @@ mod tests {
         );
         message.extend_from_slice(name);
         message.resize(size_of::<NlMsgHdr>() + payload_len, 0);
+        message
+    }
+
+    fn unsupported_message() -> Vec<u8> {
+        let mut message = Vec::new();
+        push_struct(
+            &mut message,
+            &NlMsgHdr {
+                nlmsg_len: size_of::<NlMsgHdr>() as u32,
+                nlmsg_type: 999,
+                nlmsg_flags: 0,
+                nlmsg_seq: 1,
+                nlmsg_pid: 0,
+            },
+        );
+        message
+    }
+
+    #[test]
+    fn parses_link_dump_fixture() {
+        let mut message = link_message(RTM_NEWLINK, 0, 7, b"eth0\0", 0x1);
         push_struct(
             &mut message,
             &NlMsgHdr {
@@ -364,6 +550,60 @@ mod tests {
     }
 
     #[test]
+    fn parses_valid_link_creation_event() {
+        let events =
+            parse_network_events(&link_message(RTM_NEWLINK, NLM_F_CREATE, 7, b"eth0\0", 0x1))
+                .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            NetworkEvent::Link(LinkEvent {
+                kind: LinkEventKind::Created,
+                link: Link {
+                    index: 7,
+                    name: "eth0".to_string(),
+                    flags: LinkFlags::from_bits(0x1),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parses_valid_link_removal_event() {
+        let events = parse_network_events(&link_message(RTM_DELLINK, 0, 8, b"veth0\0", 0)).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            NetworkEvent::Link(LinkEvent {
+                kind: LinkEventKind::Removed,
+                link: Link {
+                    index: 8,
+                    name: "veth0".to_string(),
+                    flags: LinkFlags::from_bits(0),
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn parses_valid_link_state_change_event() {
+        let events =
+            parse_network_events(&link_message(RTM_NEWLINK, 0, 9, b"wlan0\0", 0x1000)).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            NetworkEvent::Link(LinkEvent {
+                kind: LinkEventKind::Changed,
+                link: Link {
+                    index: 9,
+                    name: "wlan0".to_string(),
+                    flags: LinkFlags::from_bits(0x1000),
+                },
+            })
+        );
+    }
+
+    #[test]
     fn rejects_truncated_header_length() {
         let mut message = Vec::new();
         push_struct(
@@ -380,6 +620,52 @@ mod tests {
         assert!(matches!(
             parse_link_messages(&message, &mut links),
             Err(NetlinkError::MalformedMessage(_))
+        ));
+        assert!(matches!(
+            parse_network_events(&message),
+            Err(NetlinkError::MalformedMessage(_))
+        ));
+    }
+
+    #[test]
+    fn ignores_unsupported_message_type() {
+        let events = parse_network_events(&unsupported_message()).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn rejects_malformed_attributes() {
+        let mut message = link_message(RTM_NEWLINK, 0, 10, b"bad0\0", 0);
+        let attr_offset = size_of::<NlMsgHdr>() + size_of::<IfInfoMsg>();
+        message[attr_offset] = 1;
+        message[attr_offset + 1] = 0;
+        assert!(matches!(
+            parse_network_events(&message),
+            Err(NetlinkError::MalformedMessage(_))
+        ));
+    }
+
+    #[test]
+    fn parses_multiple_messages_in_one_buffer() {
+        let mut message = link_message(RTM_NEWLINK, NLM_F_CREATE, 11, b"a0\0", 0x1);
+        message.extend_from_slice(&unsupported_message());
+        message.extend_from_slice(&link_message(RTM_DELLINK, 0, 12, b"b0\0", 0));
+
+        let events = parse_network_events(&message).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[0],
+            NetworkEvent::Link(LinkEvent {
+                kind: LinkEventKind::Created,
+                ..
+            })
+        ));
+        assert!(matches!(
+            events[1],
+            NetworkEvent::Link(LinkEvent {
+                kind: LinkEventKind::Removed,
+                ..
+            })
         ));
     }
 }

@@ -6,15 +6,18 @@ instead of shelling out to tools such as `ip`, `ifconfig`, `nmcli`, or `iw`.
 
 ## Current phase
 
-Phase 1 establishes a small, testable daemon foundation:
+Phase 2 establishes read-only rtnetlink event monitoring on top of the Phase 1
+snapshot foundation:
 
-- a daemon binary (`nmd`) with a non-destructive `links` command;
-- a Linux networking abstraction trait;
-- a direct rtnetlink implementation for enumerating kernel network links;
-- parser tests built from deterministic netlink fixtures.
+- a daemon binary (`nmd`) with non-destructive `links` and `monitor` commands;
+- a Linux networking abstraction trait for snapshots and typed events;
+- direct rtnetlink link enumeration and `RTMGRP_LINK` multicast monitoring;
+- typed link creation, removal, and state-change events;
+- deterministic parser tests built from synthetic netlink fixtures.
 
 This phase intentionally does not configure interfaces, manage Wi-Fi, run DHCP,
-change DNS, or expose NetworkManager-compatible D-Bus APIs yet.
+change DNS, alter routes, manage VPNs, persist policy, or expose
+NetworkManager-compatible D-Bus APIs yet.
 
 ## Build and test
 
@@ -23,6 +26,16 @@ cargo fmt --all -- --check
 cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+## Commands
+
+```console
+cargo run -- links
+cargo run -- monitor
+```
+
+`nmd monitor` subscribes to rtnetlink link multicast notifications and prints
+human-readable link events until interrupted with Ctrl-C.
 
 ## Architecture direction
 
