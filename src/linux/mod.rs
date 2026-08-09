@@ -5,3 +5,6 @@ pub mod supplicant;
 pub mod wifi;
 pub mod ipconfig;
 pub mod dhcp;
+pub mod dns;
+pub mod ip_engine;
+pub mod activation;

@@ -10,6 +10,7 @@
 use std::fmt;
 
 use crate::connection::device::DeviceInfo;
+use crate::connection::ip::ActivationOutcome;
 use crate::connection::policy::order_for_autoconnect;
 use crate::connection::profile::{ConnectionProfile, ProfileId};
 use crate::connection::state::{ConnectionEvent, ConnectionState, StateError};
@@ -42,6 +43,8 @@ pub struct ActiveConnection {
     pub profile: ConnectionProfile,
     pub device: DeviceInfo,
     pub state: ConnectionState,
+    /// The configuration the engine actually put in place, once `Activated`.
+    pub outcome: ActivationOutcome,
 }
 
 /// Errors reported during activation and deactivation.
@@ -99,14 +102,14 @@ impl std::error::Error for ActivationError {}
 ///
 /// Implementations report success only when the underlying operation actually
 /// succeeded; the manager will not fabricate an `Activated` state otherwise.
-/// Phase 5 provides a Linux-backed implementation over nl80211 and the
-/// existing supplicant/IP stack.
+/// On success [`ActivationEngine::activate`] returns the configuration that was
+/// actually installed so callers can render it without probing the kernel.
 pub trait ActivationEngine {
     fn activate(
         &mut self,
         profile: &ConnectionProfile,
         device: &DeviceInfo,
-    ) -> Result<(), ActivationError>;
+    ) -> Result<ActivationOutcome, ActivationError>;
 
     fn deactivate(&mut self, profile: &ConnectionProfile) -> Result<(), ActivationError>;
 }
@@ -120,15 +123,15 @@ impl ActivationEngine for UnsupportedActivationEngine {
         &mut self,
         _profile: &ConnectionProfile,
         _device: &DeviceInfo,
-    ) -> Result<(), ActivationError> {
+    ) -> Result<ActivationOutcome, ActivationError> {
         Err(ActivationError::Engine(
-            "activation is not yet implemented (planned for Phase 5)".to_string(),
+            "no activation engine is configured for this daemon".to_string(),
         ))
     }
 
     fn deactivate(&mut self, _profile: &ConnectionProfile) -> Result<(), ActivationError> {
         Err(ActivationError::Engine(
-            "activation is not yet implemented (planned for Phase 5)".to_string(),
+            "no activation engine is configured for this daemon".to_string(),
         ))
     }
 }
@@ -291,6 +294,7 @@ impl ActivationManager {
             profile: profile.clone(),
             device: device.clone(),
             state: ConnectionState::Preparing,
+            outcome: ActivationOutcome::default(),
         };
         self.events.push(ConnectionEvent::StateChanged {
             active_id: id,
@@ -299,7 +303,8 @@ impl ActivationManager {
             current: ConnectionState::Preparing,
         });
         match self.engine.activate(profile, device) {
-            Ok(()) => {
+            Ok(outcome) => {
+                active.outcome = outcome;
                 // The engine boundary reports full success in one step in this
                 // milestone, so the manager walks the strict state machine
                 // through the intermediate stages on the way to Activated.
@@ -409,9 +414,9 @@ mod tests {
             &mut self,
             _profile: &ConnectionProfile,
             _device: &DeviceInfo,
-        ) -> Result<(), ActivationError> {
+        ) -> Result<crate::connection::ip::ActivationOutcome, ActivationError> {
             if self.activate_ok {
-                Ok(())
+                Ok(crate::connection::ip::ActivationOutcome::default())
             } else {
                 Err(ActivationError::Engine(
                     "simulated activate failure".to_string(),

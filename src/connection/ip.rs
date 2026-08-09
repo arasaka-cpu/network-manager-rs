@@ -179,6 +179,7 @@ pub struct ActiveIpState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ActiveIpv4 {
+    pub interface_index: i32,
     pub address: Ipv4Addr,
     pub prefix_length: u8,
     pub lease: Option<DhcpLease>,
@@ -188,7 +189,9 @@ pub struct ActiveIpv4 {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ActiveIpv6 {
+    pub interface_index: i32,
     pub link_local: Option<Ipv6Addr>,
+    pub prefix_length: u8,
     pub routes: Vec<Route>,
     pub source: Ipv6Source,
 }

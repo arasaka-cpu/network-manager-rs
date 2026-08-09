@@ -1,12 +1,12 @@
 use std::env;
 
+use network_manager_rs::linux::activation::LinuxActivationEngine;
 use network_manager_rs::linux::model::format_mac_address;
 use network_manager_rs::linux::netlink::install_sigint_shutdown_handler;
 use network_manager_rs::linux::supplicant::WpaSupplicant;
 use network_manager_rs::{
     AddressEventKind, Daemon, EnvSecretProvider, FileProfileStore, LinkEventKind, NetworkEvent,
     ProfileStore, RouteEventKind, RtnetlinkBackend, SupplicantControl, WifiEventKind,
-    WpaSupplicantActivationEngine,
 };
 
 /// Default directory holding one TOML profile per connection.
@@ -54,7 +54,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                  wifi                  List wireless interfaces (read-only)\n\
                  wifi scan             Trigger a scan and list access points (read-only)\n\
                  connections           List connection profiles (read-only)\n\
-                 connect <id> <if>     Activate profile <id> on interface <if> via wpa_supplicant\n\
+                 connect <id> <if>     Activate profile <id> on interface <if> (Wi-Fi + IP)\n\
                  disconnect <if>       Ask wpa_supplicant to disconnect interface <if>\n\
                  monitor               Monitor link, address and scan events (read-only)"
             );
@@ -206,14 +206,16 @@ fn print_connections() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Activates `profile` on `ifname` by driving wpa_supplicant over D-Bus.
+/// Activates `profile` on `ifname`: drives wpa_supplicant over D-Bus to bring
+/// the link up, then runs the IP engine (DHCP or static per the profile) and
+/// prints what was actually configured.
 ///
 /// This command changes live network state and requires access to the system
 /// bus (typically root) plus a configured secret provider (see
 /// [`EnvSecretProvider`]).
 fn activate(profile_id: &str, ifname: &str) -> Result<(), Box<dyn std::error::Error>> {
     let control: Box<dyn SupplicantControl> = Box::new(WpaSupplicant::connect(ifname)?);
-    let engine = WpaSupplicantActivationEngine::new(control, Box::new(EnvSecretProvider));
+    let engine = LinuxActivationEngine::new(control, Box::new(EnvSecretProvider));
     let mut daemon =
         Daemon::with_components(RtnetlinkBackend::new(), profile_store()?, Box::new(engine));
 
@@ -227,6 +229,26 @@ fn activate(profile_id: &str, ifname: &str) -> Result<(), Box<dyn std::error::Er
         "activated id={} profile={} device={} state={:?}",
         active.id, active.profile.id, active.device.interface_name, active.state
     );
+    if let Some(ipv4) = &active.outcome.ipv4 {
+        let dns = ipv4
+            .dns_servers
+            .iter()
+            .map(|server| server.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        println!(
+            "ipv4 address={}/{} gateway={} dns={} source={}",
+            ipv4.address,
+            ipv4.prefix_length,
+            ipv4.gateway
+                .map(|gateway| gateway.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            if dns.is_empty() { "-" } else { &dns },
+            ipv4.source
+        );
+    } else {
+        println!("ipv4 (none configured)");
+    }
     Ok(())
 }
 

@@ -280,8 +280,8 @@ mod tests {
             &mut self,
             _profile: &ConnectionProfile,
             _device: &DeviceInfo,
-        ) -> Result<(), ActivationError> {
-            Ok(())
+        ) -> Result<crate::connection::ip::ActivationOutcome, ActivationError> {
+            Ok(crate::connection::ip::ActivationOutcome::default())
         }
 
         fn deactivate(&mut self, _profile: &ConnectionProfile) -> Result<(), ActivationError> {
@@ -383,7 +383,7 @@ mod tests {
                 &mut self,
                 _profile: &ConnectionProfile,
                 _device: &DeviceInfo,
-            ) -> Result<(), ActivationError> {
+            ) -> Result<crate::connection::ip::ActivationOutcome, ActivationError> {
                 Err(ActivationError::Engine("simulated failure".to_string()))
             }
 

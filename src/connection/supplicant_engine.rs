@@ -102,7 +102,7 @@ impl ActivationEngine for WpaSupplicantActivationEngine {
         &mut self,
         profile: &ConnectionProfile,
         device: &DeviceInfo,
-    ) -> Result<(), ActivationError> {
+    ) -> Result<crate::connection::ip::ActivationOutcome, ActivationError> {
         if self.active_network.is_some() {
             return Err(ActivationError::Engine(
                 "an activation is already in progress".to_string(),
@@ -171,7 +171,9 @@ impl ActivationEngine for WpaSupplicantActivationEngine {
         match outcome {
             Ok(()) => {
                 self.active_network = Some((profile.id.clone(), network_path));
-                Ok(())
+                // This engine only brings the 802.11 link up; IP configuration
+                // is layered on top by the composite engine.
+                Ok(crate::connection::ip::ActivationOutcome::default())
             }
             Err(err) => Err(err),
         }

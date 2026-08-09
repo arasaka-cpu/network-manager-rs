@@ -55,6 +55,31 @@ echo "== verifying lease matches the address the kernel assigned"
 ASSIGNED=$(ip netns exec "$CLIENT_NS" ip -4 addr show "$CLIENT_VETH" | grep -o 'inet [0-9./]*' | awk '{print $2}')
 [ "$ASSIGNED" = "${CLIENT_ADDR}/24" ] || { echo "kernel address mismatch: $ASSIGNED"; exit 1; }
 
+# nmd_dhcp_client left its lease applied; clear the interface so the engine
+# demos start from a pristine state (and the engine's own DHCP acquisition
+# does not collide with the already-assigned address).
+ip netns exec "$CLIENT_NS" ip -4 addr flush dev "$CLIENT_VETH"
+ip netns exec "$CLIENT_NS" ip -4 route flush dev "$CLIENT_VETH"
+
+# The engine writes /etc/resolv.conf, but the netns inherits the host's
+# NetworkManager-owned file. Run the demos in a private mount namespace with
+# an empty tmpfs over /etc so the DNS manager can take ownership without the
+# host resolv.conf being touched.
+engine_demo() {
+    local mode="$1"
+    ip netns exec "$CLIENT_NS" unshare -m --propagation private sh -c \
+        'mount -t tmpfs tmpfs /etc && : > /etc/resolv.conf && exec "$1" "$2" "$3"' \
+        _ "$BIN_DIR/nmd_ip_engine_demo" "$CLIENT_VETH" "$mode"
+}
+
+echo "== exercising LinuxIpEngine manual activation/teardown in netns $CLIENT_NS"
+engine_demo manual | tee /tmp/nmd_engine_manual.txt
+grep -q "IP ENGINE manual OK" /tmp/nmd_engine_manual.txt
+
+echo "== exercising LinuxIpEngine DHCP activation/teardown in netns $CLIENT_NS"
+engine_demo auto | tee /tmp/nmd_engine_auto.txt
+grep -q "IP ENGINE auto OK" /tmp/nmd_engine_auto.txt
+
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 
