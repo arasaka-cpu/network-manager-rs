@@ -1,0 +1,21 @@
+[package]
+name = "network-manager-rs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "Linux-native network management daemon foundation"
+
+[lib]
+name = "network_manager_rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nmd"
+path = "src/bin/nmd.rs"
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
