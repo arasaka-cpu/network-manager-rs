@@ -2,6 +2,7 @@
 
 pub mod connection;
 pub mod daemon;
+pub mod dbus;
 pub mod linux;
 
 pub use connection::{
