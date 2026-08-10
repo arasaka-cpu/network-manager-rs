@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use zbus::blocking::Connection;
 use zbus::object_server::SignalEmitter;
-use zbus::{interface, zvariant::OwnedValue};
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::interface;
 
 use crate::connection::device::{DeviceInfo, DeviceKind as DomainDeviceKind};
 use crate::daemon::Daemon;
@@ -285,40 +286,40 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
     }
 
     #[zbus(property)]
-    fn active_connection(&self) -> Result<String, zbus::fdo::Error> {
+    fn active_connection(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
         Ok(self
             .active()?
-            .map(|active| super::active_path(active.id))
-            .unwrap_or_else(|| "/".to_string()))
+            .map(|active| OwnedObjectPath::try_from(super::active_path(active.id)).unwrap_or_else(|_| super::root_object_path()))
+            .unwrap_or_else(super::root_object_path))
     }
 
     #[zbus(property)]
-    fn ip4_config(&self) -> Result<String, zbus::fdo::Error> {
+    fn ip4_config(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
         Ok(self
             .active()?
-            .map(|active| super::ip4_path(active.id))
-            .unwrap_or_else(|| "/".to_string()))
+            .map(|active| OwnedObjectPath::try_from(super::ip4_path(active.id)).unwrap_or_else(|_| super::root_object_path()))
+            .unwrap_or_else(super::root_object_path))
     }
 
     #[zbus(property)]
-    fn dhcp4_config(&self) -> Result<String, zbus::fdo::Error> {
+    fn dhcp4_config(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
         Ok(self
             .active()?
-            .map(|active| super::dhcp4_path(active.id))
-            .unwrap_or_else(|| "/".to_string()))
+            .map(|active| OwnedObjectPath::try_from(super::dhcp4_path(active.id)).unwrap_or_else(|_| super::root_object_path()))
+            .unwrap_or_else(super::root_object_path))
     }
 
     #[zbus(property)]
-    fn ip6_config(&self) -> Result<String, zbus::fdo::Error> {
+    fn ip6_config(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
         Ok(self
             .active()?
-            .map(|active| super::ip6_path(active.id))
-            .unwrap_or_else(|| "/".to_string()))
+            .map(|active| OwnedObjectPath::try_from(super::ip6_path(active.id)).unwrap_or_else(|_| super::root_object_path()))
+            .unwrap_or_else(super::root_object_path))
     }
 
     #[zbus(property)]
-    fn dhcp6_config(&self) -> Result<String, zbus::fdo::Error> {
-        Ok("/".to_string())
+    fn dhcp6_config(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
+        Ok(super::root_object_path())
     }
 
     #[zbus(property)]
@@ -352,7 +353,7 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
     }
 
     #[zbus(property)]
-    fn available_connections(&self) -> Result<Vec<String>, zbus::fdo::Error> {
+    fn available_connections(&self) -> Result<Vec<OwnedObjectPath>, zbus::fdo::Error> {
         let daemon = self.shared.daemon();
         let view = self.view()?;
         let device_info = view.to_device_info();
@@ -362,6 +363,7 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
             .iter()
             .filter(|profile| profile.matches(&device_info))
             .filter_map(|profile| self.shared.connection_path_lookup(&profile.id))
+            .filter_map(|path| OwnedObjectPath::try_from(path).ok())
             .collect())
     }
 
@@ -421,7 +423,7 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
     }
 
     #[zbus(property)]
-    fn ports(&self) -> Result<Vec<String>, zbus::fdo::Error> {
+    fn ports(&self) -> Result<Vec<OwnedObjectPath>, zbus::fdo::Error> {
         Ok(Vec::new())
     }
 }
@@ -485,11 +487,23 @@ impl<B> WirelessIface<B> {
 
 #[interface(name = "org.freedesktop.NetworkManager.Device.Wireless")]
 impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> WirelessIface<B> {
-    fn get_access_points(&self) -> Result<Vec<String>, FacadeError> {
+    #[zbus(signal)]
+    async fn access_point_added(
+        emitter: &SignalEmitter<'_>,
+        access_point: OwnedObjectPath,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn access_point_removed(
+        emitter: &SignalEmitter<'_>,
+        access_point: OwnedObjectPath,
+    ) -> zbus::Result<()>;
+
+    fn get_access_points(&self) -> Result<Vec<OwnedObjectPath>, FacadeError> {
         self.all_access_points()
     }
 
-    fn get_all_access_points(&self) -> Result<Vec<String>, FacadeError> {
+    fn get_all_access_points(&self) -> Result<Vec<OwnedObjectPath>, FacadeError> {
         self.all_access_points()
     }
 
@@ -500,7 +514,7 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> WirelessIface<B> 
         Ok(self.shared.daemon_mut().scan_wifi().map(|_| ())?)
     }
 
-    fn all_access_points(&self) -> Result<Vec<String>, FacadeError> {
+    fn all_access_points(&self) -> Result<Vec<OwnedObjectPath>, FacadeError> {
         let daemon = self.shared.daemon();
         let is_primary = enumerate_devices(&daemon)?
             .iter()
@@ -511,7 +525,12 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> WirelessIface<B> 
         if !is_primary {
             return Ok(Vec::new());
         }
-        Ok(self.shared.access_point_paths())
+        Ok(self
+            .shared
+            .access_point_paths()
+            .into_iter()
+            .filter_map(|path| OwnedObjectPath::try_from(path).ok())
+            .collect())
     }
 
     #[zbus(property)]
@@ -540,13 +559,13 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> WirelessIface<B> 
     }
 
     #[zbus(property)]
-    fn access_points(&self) -> Result<Vec<String>, zbus::fdo::Error> {
+    fn access_points(&self) -> Result<Vec<OwnedObjectPath>, zbus::fdo::Error> {
         self.all_access_points().map_err(Into::into)
     }
 
     #[zbus(property)]
-    fn active_access_point(&self) -> Result<String, zbus::fdo::Error> {
-        Ok("/".to_string())
+    fn active_access_point(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
+        Ok(super::root_object_path())
     }
 
     #[zbus(property)]

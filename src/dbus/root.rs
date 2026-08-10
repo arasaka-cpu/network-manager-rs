@@ -19,8 +19,8 @@ use super::convert::{settings_to_profile, stable_uuid};
 use super::error::FacadeError;
 use super::shared::Shared;
 use super::{
-    NM_CONNECTIVITY_FULL, NM_CONNECTIVITY_NONE, active_path, device_path, dhcp4_path, ip4_path,
-    ip6_path, settings_connection_path,
+    NM_CONNECTIVITY_FULL, NM_CONNECTIVITY_NONE, NM_STATE_CONNECTED_GLOBAL, NM_STATE_DISCONNECTED,
+    active_path, device_path, dhcp4_path, ip4_path, ip6_path, settings_connection_path,
 };
 
 /// Parses the trailing integer id from an object path like
@@ -72,6 +72,32 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
                 .activate_profile(&profile.id, &info)
                 .map_err(FacadeError::from)
         }
+    }
+
+    fn add_and_activate(
+        &self,
+        emitter: &SignalEmitter<'_>,
+        settings: super::convert::SettingsDict,
+        device: &OwnedObjectPath,
+    ) -> Result<(String, String), FacadeError> {
+        let profile: ConnectionProfile = settings_to_profile(&settings)?;
+        self.shared.daemon_mut().create_profile(profile.clone())?;
+        self.shared
+            .register_connection_object(&profile)
+            .map_err(|error| FacadeError::Internal(error.to_string()))?;
+        let connection_path = settings_connection_path(&stable_uuid(&profile.id));
+
+        let active = self.activate(settings, device.as_str())?;
+        self.shared
+            .register_active_connection_object(&active)
+            .map_err(|error| FacadeError::Internal(error.to_string()))?;
+        let active_connection_path = active_path(active.id);
+        super::emit(Self::active_connection_added(
+            emitter,
+            OwnedObjectPath::try_from(active_connection_path.clone())
+                .map_err(|e| FacadeError::Internal(e.to_string()))?,
+        ))?;
+        Ok((connection_path, active_connection_path))
     }
 
     fn device_paths(&self) -> Result<Vec<String>, FacadeError> {
@@ -158,29 +184,39 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
         device: OwnedObjectPath,
         _specific_object: OwnedObjectPath,
     ) -> Result<(OwnedObjectPath, OwnedObjectPath), FacadeError> {
-        let profile: ConnectionProfile = settings_to_profile(&settings)?;
-        self.shared.daemon_mut().create_profile(profile.clone())?;
-        self.shared
-            .register_connection_object(&profile)
-            .map_err(|error| FacadeError::Internal(error.to_string()))?;
-        let connection_path = settings_connection_path(&stable_uuid(&profile.id));
-
-        let active = self.activate(settings, device.as_str())?;
-        self.shared
-            .register_active_connection_object(&active)
-            .map_err(|error| FacadeError::Internal(error.to_string()))?;
-        let active_connection_path = active_path(active.id);
-        super::emit(Self::active_connection_added(
-            &emitter,
-            OwnedObjectPath::try_from(active_connection_path.clone())
-                .map_err(|e| FacadeError::Internal(e.to_string()))?,
-        ))?;
-
+        let (connection_path, active_connection_path) =
+            self.add_and_activate(&emitter, settings, &device)?;
         Ok((
             OwnedObjectPath::try_from(connection_path)
                 .map_err(|error| FacadeError::Internal(error.to_string()))?,
             OwnedObjectPath::try_from(active_connection_path)
                 .map_err(|error| FacadeError::Internal(error.to_string()))?,
+        ))
+    }
+
+    fn add_and_activate_connection2(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        settings: super::convert::SettingsDict,
+        device: OwnedObjectPath,
+        _specific_object: OwnedObjectPath,
+        _options: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    ) -> Result<
+        (
+            OwnedObjectPath,
+            OwnedObjectPath,
+            std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+        ),
+        FacadeError,
+    > {
+        let (connection_path, active_connection_path) =
+            self.add_and_activate(&emitter, settings, &device)?;
+        Ok((
+            OwnedObjectPath::try_from(connection_path)
+                .map_err(|error| FacadeError::Internal(error.to_string()))?,
+            OwnedObjectPath::try_from(active_connection_path)
+                .map_err(|error| FacadeError::Internal(error.to_string()))?,
+            std::collections::HashMap::new(),
         ))
     }
 
@@ -193,7 +229,15 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
 
     fn sleep(&self, _sleep: bool) {}
 
+    fn enable(&self, _enable: bool) {}
+
+    fn reload(&self, _flags: u32) {}
+
     fn set_logging(&self, _level: String, _domains: String) {}
+
+    fn get_logging(&self) -> (String, String) {
+        ("INFO".to_string(), String::new())
+    }
 
     fn get_permissions(&self) -> Vec<(String, String)> {
         vec![
@@ -258,6 +302,15 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
     #[zbus(property)]
     fn connectivity(&self) -> u32 {
         self.check_connectivity()
+    }
+
+    #[zbus(property(emits_changed_signal = "false"), name = "State")]
+    fn nm_state(&self) -> u32 {
+        if self.shared.daemon().active_connections().is_empty() {
+            NM_STATE_DISCONNECTED
+        } else {
+            NM_STATE_CONNECTED_GLOBAL
+        }
     }
 
     #[zbus(property)]

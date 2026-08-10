@@ -115,6 +115,36 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
         OwnedObjectPath::try_from(path).map_err(|error| FacadeError::Internal(error.to_string()))
     }
 
+    fn add_connection2(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        settings: SettingsDict,
+        _flags: u32,
+        _args: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    ) -> Result<
+        (
+            OwnedObjectPath,
+            std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+        ),
+        FacadeError,
+    > {
+        let profile = settings_to_profile(&settings)?;
+        self.shared.daemon_mut().create_profile(profile.clone())?;
+        self.shared.register_connection_object(&profile).map_err(|error| {
+            FacadeError::Internal(format!("failed to register connection object: {error}"))
+        })?;
+        let path = settings_connection_path(&stable_uuid(&profile.id));
+        super::emit(Self::new_connection(
+            &emitter,
+            OwnedObjectPath::try_from(path.clone())
+                .map_err(|e| FacadeError::Internal(e.to_string()))?,
+        ))?;
+        Ok((
+            OwnedObjectPath::try_from(path).map_err(|error| FacadeError::Internal(error.to_string()))?,
+            std::collections::HashMap::new(),
+        ))
+    }
+
     fn load_connections(&self, _filenames: Vec<String>) -> (bool, Vec<String>) {
         (true, Vec::new())
     }

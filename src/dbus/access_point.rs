@@ -145,6 +145,11 @@ impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
     }
 
     #[zbus(property)]
+    fn bandwidth(&self) -> Result<u32, zbus::fdo::Error> {
+        Ok(0)
+    }
+
+    #[zbus(property)]
     fn strength(&self) -> Result<u8, zbus::fdo::Error> {
         Ok(strength_pct(
             self.ap()
@@ -154,11 +159,12 @@ impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
     }
 
     #[zbus(property)]
-    fn last_seen(&self) -> Result<u32, zbus::fdo::Error> {
+    fn last_seen(&self) -> Result<i32, zbus::fdo::Error> {
         Ok(self
             .ap()
             .ok_or_else(|| FacadeError::UnknownDevice(format!("access point {}", crate::linux::model::format_mac_address(&self.bssid))))?
             .seen_millis_ago
+            .map(|millis| (millis / 1000) as i32)
             .unwrap_or(0))
     }
 

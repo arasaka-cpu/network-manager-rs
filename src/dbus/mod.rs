@@ -18,6 +18,12 @@ mod access_point;
 mod root;
 mod shared;
 
+#[cfg(test)]
+mod testutil;
+
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use zbus::blocking::Connection;
@@ -107,6 +113,14 @@ pub const NM_CONNECTIVITY_PORTAL: u32 = 2;
 pub const NM_CONNECTIVITY_LIMITED: u32 = 3;
 pub const NM_CONNECTIVITY_FULL: u32 = 4;
 
+pub const NM_STATE_UNKNOWN: u32 = 0;
+pub const NM_STATE_ASLEEP: u32 = 10;
+pub const NM_STATE_DISCONNECTED: u32 = 20;
+pub const NM_STATE_CONNECTING: u32 = 40;
+pub const NM_STATE_CONNECTED_LOCAL: u32 = 50;
+pub const NM_STATE_CONNECTED_SITE: u32 = 60;
+pub const NM_STATE_CONNECTED_GLOBAL: u32 = 70;
+
 pub const NM_ACTIVE_CONNECTION_STATE_UNKNOWN: u32 = 0;
 pub const NM_ACTIVE_CONNECTION_STATE_ACTIVATING: u32 = 1;
 pub const NM_ACTIVE_CONNECTION_STATE_ACTIVATED: u32 = 2;
@@ -158,10 +172,11 @@ impl<B: NetworkBackend + Send + Sync + 'static> Server<B> {
         Self::connect(daemon, name)
     }
 
-    fn connect(daemon: Daemon<B>, name: &str) -> zbus::Result<Self> {
-        let conn = Connection::session()?;
-        conn.request_name(name)
-            .map_err(|error| zbus::Error::Failure(format!("cannot claim {name}: {error}")))?;
+    /// Registers every object on an already-connected connection.
+    ///
+    /// Tests use this with a peer-to-peer connection so the facade can be
+    /// exercised without a message bus.
+    pub fn attach(daemon: Daemon<B>, conn: Connection) -> zbus::Result<Self> {
         let shared = Arc::new(Shared::new(daemon, conn.clone()));
         let server = Self {
             conn: conn.clone(),
@@ -177,5 +192,12 @@ impl<B: NetworkBackend + Send + Sync + 'static> Server<B> {
         )?;
         server.shared.register_all()?;
         Ok(server)
+    }
+
+    fn connect(daemon: Daemon<B>, name: &str) -> zbus::Result<Self> {
+        let conn = Connection::session()?;
+        conn.request_name(name)
+            .map_err(|error| zbus::Error::Failure(format!("cannot claim {name}: {error}")))?;
+        Self::attach(daemon, conn)
     }
 }
