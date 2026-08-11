@@ -406,7 +406,10 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
     #[zbus(property)]
     fn available_connections(&self) -> Result<Vec<OwnedObjectPath>, zbus::fdo::Error> {
         let daemon = self.shared.daemon();
-        let view = self.view()?;
+        let view = enumerate_devices(&daemon)?
+            .into_iter()
+            .find(|device| device.index == self.index)
+            .ok_or_else(|| FacadeError::UnknownDevice(format!("device {}", self.index)))?;
         let device_info = view.to_device_info();
         Ok(daemon
             .list_profiles()
@@ -566,13 +569,15 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> WirelessIface<B> 
     }
 
     fn all_access_points(&self) -> Result<Vec<OwnedObjectPath>, FacadeError> {
-        let daemon = self.shared.daemon();
-        let is_primary = enumerate_devices(&daemon)?
-            .iter()
-            .filter(|device| device.kind == DeviceKind::Wifi)
-            .map(|device| device.index)
-            .min()
-            == Some(self.index);
+        let is_primary = {
+            let daemon = self.shared.daemon();
+            enumerate_devices(&daemon)?
+                .iter()
+                .filter(|device| device.kind == DeviceKind::Wifi)
+                .map(|device| device.index)
+                .min()
+                == Some(self.index)
+        };
         if !is_primary {
             return Ok(Vec::new());
         }

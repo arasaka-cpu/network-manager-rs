@@ -26,6 +26,36 @@ fn p2p_probe_root_devices_property() {
     );
 }
 
+/// A device property read must complete promptly. The proxy populates its
+/// property cache with a `GetAll`, which runs every getter on the device
+/// interface; regression test for a self-deadlock in `available_connections`,
+/// which held the daemon mutex while re-acquiring it via `view()`.
+#[test]
+fn p2p_probe_device_property_read_completes() {
+    let backend = FakeBackend::default()
+        .with_wifi(wifi_interface(2, "wlan0", [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
+    let server = TestServer::start(Daemon::new(backend)).expect("server starts");
+
+    let proxy = server
+        .proxy(
+            "/org/freedesktop/NetworkManager/Devices/2",
+            "org.freedesktop.NetworkManager.Device",
+        )
+        .unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let state: u32 = proxy.get_property("State").unwrap();
+        tx.send(state).ok();
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(state) => assert_eq!(state, 30, "an up device with no active connection is disconnected"),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+            "device property read did not complete within 10s (daemon mutex self-deadlock?)"
+        ),
+        Err(_) => panic!("device property read failed"),
+    }
+}
+
 #[test]
 fn p2p_probe_introspection_reports_interfaces() {
     let backend = FakeBackend::default()
