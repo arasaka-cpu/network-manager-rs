@@ -170,6 +170,8 @@ impl ActivationEngine for SuccessEngine {
                 dns_servers: vec!["192.168.1.1".parse().unwrap()],
                 search_domains: vec!["lan".to_string()],
                 source: crate::connection::ip::Ipv4Source::AutomaticDhcp,
+                routes: Vec::new(),
+                lease: None,
             }),
             ipv6: None,
             degradation: None,

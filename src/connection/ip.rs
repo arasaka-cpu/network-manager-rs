@@ -128,11 +128,24 @@ pub struct Ipv4Outcome {
     pub dns_servers: Vec<IpAddr>,
     pub search_domains: Vec<String>,
     pub source: Ipv4Source,
+    /// Routes installed for this connection (a default route at minimum when
+    /// a gateway is configured).
+    pub routes: Vec<Route>,
+    /// The DHCPv4 lease backing this configuration, when it came from DHCP.
+    pub lease: Option<DhcpLease>,
 }
 
 /// IPv6 portion of an activation outcome.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Ipv6Outcome {
+    /// The configured global (or manual) address, if any.
+    pub address: Option<Ipv6Addr>,
+    pub prefix_length: u8,
+    pub gateway: Option<Ipv6Addr>,
+    pub dns_servers: Vec<IpAddr>,
+    pub search_domains: Vec<String>,
+    pub routes: Vec<Route>,
+    /// The link-local address observed on the interface.
     pub link_local: Option<Ipv6Addr>,
     pub source: Ipv6Source,
 }

@@ -219,6 +219,8 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
                     dns_servers: dns_config.servers,
                     search_domains: dns_config.search_domains,
                     source: Ipv4Source::AutomaticDhcp,
+                    routes: default_route_for(interface_index, lease.gateway),
+                    lease: Some(lease),
                 });
             }
             IpMethod::Manual => {
@@ -265,6 +267,7 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
                     source: Ipv4Source::Manual,
                 });
                 state.dns_owner = dns_ownership;
+                let routes = default_route_for(interface_index, gateway);
                 outcome.ipv4 = Some(Ipv4Outcome {
                     address,
                     prefix_length,
@@ -272,6 +275,8 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
                     dns_servers: ipv4.dns_servers.clone(),
                     search_domains: Vec::new(),
                     source: Ipv4Source::Manual,
+                    routes,
+                    lease: None,
                 });
             }
         }
@@ -290,6 +295,12 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
             IpMethod::Automatic => {
                 let link_local = link_local_address(interface_index);
                 outcome.ipv6 = Some(crate::connection::ip::Ipv6Outcome {
+                    address: None,
+                    prefix_length: 64,
+                    gateway: None,
+                    dns_servers: Vec::new(),
+                    search_domains: Vec::new(),
+                    routes: Vec::new(),
                     link_local,
                     source: crate::connection::ip::Ipv6Source::AutomaticLinkLocal,
                 });
@@ -321,7 +332,13 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
                     source: crate::connection::ip::Ipv6Source::Manual,
                 });
                 outcome.ipv6 = Some(crate::connection::ip::Ipv6Outcome {
-                    link_local: Some(config.address),
+                    address: Some(config.address),
+                    prefix_length: config.prefix_length,
+                    gateway: config.gateway,
+                    dns_servers: ipv6.dns_servers.clone(),
+                    search_domains: Vec::new(),
+                    routes: Vec::new(),
+                    link_local: None,
                     source: crate::connection::ip::Ipv6Source::Manual,
                 });
             }
