@@ -34,10 +34,15 @@ fn val_u32(value: u32) -> OwnedValue {
     OwnedValue::from(value)
 }
 
-/// Renders the IPv4 address as the big-endian `u32` NetworkManager uses in
-/// the deprecated `Addresses`/`Nameservers` arrays.
+/// Renders an IPv4 address as the `u32` NetworkManager puts in the deprecated
+/// `Addresses`/`Nameservers`/`Routes` arrays.
+///
+/// NetworkManager serializes the four octets as a little-endian `u32` (the
+/// value that, read little-endian, yields the octets in order). Verified
+/// against a live 1.58 daemon: `192.168.1.1` appears on the bus as `16885952`
+/// and `192.168.1.0` as `108736`.
 fn ipv4_u32(address: Ipv4Addr) -> u32 {
-    u32::from_be_bytes(address.octets())
+    u32::from_le_bytes(address.octets())
 }
 
 /// Masks `address` down to its network address for the given prefix, matching
@@ -65,14 +70,13 @@ fn network_address(address: IpAddr, prefix: u8) -> IpAddr {
     }
 }
 
-fn ipv4_route_entry(route: &Route, gateway: Option<Ipv4Addr>) -> Vec<u32> {
+fn ipv4_route_entry(route: &Route) -> Vec<u32> {
     let destination = match route.destination {
         IpAddr::V4(address) => address,
         IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
     };
-    let next_hop = match (route.gateway, gateway) {
-        (Some(IpAddr::V4(hop)), _) => Some(hop),
-        (_, Some(gateway)) => Some(gateway),
+    let next_hop = match route.gateway {
+        Some(IpAddr::V4(hop)) => Some(hop),
         _ => None,
     };
     vec![
@@ -236,12 +240,7 @@ impl<B: NetworkBackend + Send + Sync + 'static> Ip4ConfigIface<B> {
     #[zbus(property)]
     fn routes(&self) -> Vec<Vec<u32>> {
         self.outcome()
-            .map(|ipv4| {
-                ipv4.routes
-                    .iter()
-                    .map(|route| ipv4_route_entry(route, ipv4.gateway))
-                    .collect()
-            })
+            .map(|ipv4| ipv4.routes.iter().map(ipv4_route_entry).collect())
             .unwrap_or_default()
     }
 

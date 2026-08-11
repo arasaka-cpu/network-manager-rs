@@ -8,6 +8,7 @@
 // Test scaffolding is intentionally built ahead of the tests that consume it.
 #![allow(dead_code)]
 
+use std::net::IpAddr;
 use std::os::unix::net::UnixStream;
 use std::sync::MutexGuard;
 
@@ -153,6 +154,10 @@ pub fn access_point(
 }
 
 /// An activation engine that installs a fixed IPv4 configuration.
+///
+/// The fixed values mirror what a real NetworkManager reports for a
+/// `192.168.1.184/24` connection (gateway `192.168.1.1`) so D-Bus value tests
+/// can lock the exact wire encoding.
 #[derive(Default)]
 pub struct SuccessEngine;
 
@@ -164,13 +169,22 @@ impl ActivationEngine for SuccessEngine {
     ) -> Result<ActivationOutcome, ActivationError> {
         let outcome = ActivationOutcome {
             ipv4: Some(crate::connection::ip::Ipv4Outcome {
-                address: "192.168.1.10".parse().unwrap(),
+                address: "192.168.1.184".parse().unwrap(),
                 prefix_length: 24,
                 gateway: Some("192.168.1.1".parse().unwrap()),
                 dns_servers: vec!["192.168.1.1".parse().unwrap()],
                 search_domains: vec!["lan".to_string()],
                 source: crate::connection::ip::Ipv4Source::AutomaticDhcp,
-                routes: Vec::new(),
+                routes: vec![crate::linux::model::Route {
+                    family: crate::linux::model::IpFamily::V4,
+                    destination: IpAddr::V4("192.168.1.0".parse().unwrap()),
+                    prefix_length: 24,
+                    gateway: None,
+                    output_interface: None,
+                    metric: Some(600),
+                    kind: crate::linux::model::RouteKind::Unicast,
+                    scope: crate::linux::model::RouteScope::Link,
+                }],
                 lease: None,
             }),
             ipv6: None,

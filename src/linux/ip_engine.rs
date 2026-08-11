@@ -238,9 +238,9 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
                     .ok_or({
                         IpEngineError::InvalidConfig("manual IPv4 needs a valid IPv4 address")
                     })?;
-                let prefix_length = ipv4
-                    .prefix_length
-                    .ok_or({ IpEngineError::InvalidConfig("manual IPv4 needs a prefix length") })?;
+                let prefix_length = ipv4.prefix_length.ok_or(IpEngineError::InvalidConfig(
+                    "manual IPv4 needs a prefix length",
+                ))?;
                 let gateway = ipv4.gateway.and_then(|gateway| match gateway {
                     IpAddr::V4(address) => Some(address),
                     IpAddr::V6(_) => None,

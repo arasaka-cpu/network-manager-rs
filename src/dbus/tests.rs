@@ -6,7 +6,7 @@
 
 use crate::daemon::Daemon;
 
-use super::testutil::{FakeBackend, TestServer, ethernet_link, wifi_interface};
+use super::testutil::{FakeBackend, SuccessEngine, TestServer, ethernet_link, wifi_interface};
 
 #[test]
 fn p2p_probe_root_devices_property() {
@@ -111,6 +111,74 @@ fn p2p_probe_ethernet_devices_are_enumerated() {
             "/org/freedesktop/NetworkManager/Devices/3"
         ]
     );
+}
+
+/// The deprecated IPv4 scalar properties must carry the exact values a real
+/// NetworkManager publishes: the four address octets as a little-endian `u32`.
+/// Values captured from the live NM 1.58 on this host (`192.168.1.184` →
+/// `3087116480`, gateway `192.168.1.1` → `16885952`, connected network
+/// `192.168.1.0` → `108736`).
+#[test]
+fn p2p_probe_ip4config_values_match_networkmanager_encoding() {
+    let backend = FakeBackend::default().with_link(ethernet_link(3, "eth0", true));
+    let daemon = Daemon::with_engine(backend, Box::new(SuccessEngine));
+    let server = TestServer::start(daemon).expect("server starts");
+
+    let device =
+        zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/3")
+            .unwrap();
+    let root = server
+        .proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager")
+        .unwrap();
+
+    let mut connection = std::collections::HashMap::new();
+    connection.insert(
+        "id".to_string(),
+        zbus::zvariant::OwnedValue::from(zbus::zvariant::Str::from("eth0-conn")),
+    );
+    connection.insert(
+        "type".to_string(),
+        zbus::zvariant::OwnedValue::from(zbus::zvariant::Str::from("802-3-ethernet")),
+    );
+    let mut settings = super::convert::SettingsDict::new();
+    settings.insert("connection".to_string(), connection);
+
+    let (_, active): (
+        zbus::zvariant::OwnedObjectPath,
+        zbus::zvariant::OwnedObjectPath,
+    ) = root
+        .call_method(
+            "AddAndActivateConnection",
+            &(
+                settings,
+                device,
+                zbus::zvariant::OwnedObjectPath::try_from("/").unwrap(),
+            ),
+        )
+        .unwrap()
+        .body()
+        .deserialize()
+        .unwrap();
+
+    let id: u64 = active
+        .as_str()
+        .strip_prefix("/org/freedesktop/NetworkManager/ActiveConnection/")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let ip4 = server
+        .proxy(
+            &super::ip4_path(crate::connection::activation::ActiveConnectionId::new(id)),
+            "org.freedesktop.NetworkManager.IP4Config",
+        )
+        .unwrap();
+
+    let addresses: Vec<Vec<u32>> = ip4.get_property("Addresses").unwrap();
+    assert_eq!(addresses, vec![vec![3087116480, 24, 16885952]]);
+    let nameservers: Vec<u32> = ip4.get_property("Nameservers").unwrap();
+    assert_eq!(nameservers, vec![16885952]);
+    let routes: Vec<Vec<u32>> = ip4.get_property("Routes").unwrap();
+    assert_eq!(routes, vec![vec![108736, 24, 0, 600]]);
 }
 
 /// True when an introspection XML declares a property with the given type,
