@@ -19,6 +19,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 zbus = { version = "5", features = ["p2p"] }
 
+[dev-dependencies]
+futures-lite = "2"
+
 [[test]]
 name = "integration_netns"
 path = "tests/integration_netns/main.rs"

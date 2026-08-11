@@ -50,7 +50,10 @@ pub fn device_path(index: i32) -> String {
 
 /// Object path for an active connection, keyed by its daemon id.
 pub fn active_path(id: crate::connection::activation::ActiveConnectionId) -> String {
-    format!("/org/freedesktop/NetworkManager/ActiveConnection/{}", id.as_u64())
+    format!(
+        "/org/freedesktop/NetworkManager/ActiveConnection/{}",
+        id.as_u64()
+    )
 }
 
 /// Object path for the IPv4 config of an active connection.
@@ -65,24 +68,38 @@ pub fn ip6_path(id: crate::connection::activation::ActiveConnectionId) -> String
 
 /// Object path for the DHCPv4 config of an active connection.
 pub fn dhcp4_path(id: crate::connection::activation::ActiveConnectionId) -> String {
-    format!("/org/freedesktop/NetworkManager/DHCP4Config/{}", id.as_u64())
+    format!(
+        "/org/freedesktop/NetworkManager/DHCP4Config/{}",
+        id.as_u64()
+    )
 }
 
 /// Object path for the DHCPv6 config of an active connection.
 pub fn dhcp6_path(id: crate::connection::activation::ActiveConnectionId) -> String {
-    format!("/org/freedesktop/NetworkManager/DHCP6Config/{}", id.as_u64())
+    format!(
+        "/org/freedesktop/NetworkManager/DHCP6Config/{}",
+        id.as_u64()
+    )
 }
 
 /// Object path for a settings connection, keyed by its UUID.
+///
+/// D-Bus object path elements may only contain `[A-Za-z0-9_]`, so the UUID's
+/// hyphens are stripped; clients resolve connections by UUID through
+/// `GetConnectionByUuid` regardless of the path's exact form.
 pub fn settings_connection_path(uuid: &str) -> String {
-    format!("/org/freedesktop/NetworkManager/Settings/{uuid}")
+    let segment = uuid.replace('-', "");
+    format!("/org/freedesktop/NetworkManager/Settings/{segment}")
 }
 
 /// Object path for an access point, keyed by device index and BSSID.
 pub fn access_point_path(device_index: i32, bssid: &[u8; 6]) -> String {
     format!(
         "/org/freedesktop/NetworkManager/AccessPoint/{device_index}_{}",
-        bssid.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        bssid
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     )
 }
 

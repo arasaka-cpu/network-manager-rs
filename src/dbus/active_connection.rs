@@ -7,9 +7,9 @@
 
 use std::sync::Arc;
 
+use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedObjectPath;
-use zbus::interface;
 
 use crate::connection::activation::ActiveConnectionId;
 use crate::connection::state::ConnectionState;
@@ -20,20 +20,20 @@ use super::error::FacadeError;
 use super::shared::Shared;
 use super::{
     NM_ACTIVE_CONNECTION_STATE_ACTIVATED, NM_ACTIVE_CONNECTION_STATE_ACTIVATING,
-    NM_ACTIVE_CONNECTION_STATE_DEACTIVATING, NM_ACTIVE_CONNECTION_STATE_DEACTIVATED, dhcp4_path,
+    NM_ACTIVE_CONNECTION_STATE_DEACTIVATED, NM_ACTIVE_CONNECTION_STATE_DEACTIVATING, dhcp4_path,
     dhcp6_path, ip4_path, ip6_path, root_object_path, settings_connection_path,
 };
 
-fn nm_state(state: ConnectionState) -> u32 {
+pub(crate) fn nm_state(state: ConnectionState) -> u32 {
     match state {
         ConnectionState::Activated => NM_ACTIVE_CONNECTION_STATE_ACTIVATED,
-        ConnectionState::Preparing
-        | ConnectionState::Configuring
-        | ConnectionState::Activating => NM_ACTIVE_CONNECTION_STATE_ACTIVATING,
+        ConnectionState::Preparing | ConnectionState::Configuring | ConnectionState::Activating => {
+            NM_ACTIVE_CONNECTION_STATE_ACTIVATING
+        }
         ConnectionState::Deactivating => NM_ACTIVE_CONNECTION_STATE_DEACTIVATING,
-        ConnectionState::Unknown
-        | ConnectionState::Disconnected
-        | ConnectionState::Failed => NM_ACTIVE_CONNECTION_STATE_DEACTIVATED,
+        ConnectionState::Unknown | ConnectionState::Disconnected | ConnectionState::Failed => {
+            NM_ACTIVE_CONNECTION_STATE_DEACTIVATED
+        }
     }
 }
 
@@ -57,8 +57,7 @@ impl<B: NetworkBackend + Send + Sync + 'static> ActiveConnectionIface<B> {
 
 #[interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
 impl<B: NetworkBackend + Send + Sync + 'static> ActiveConnectionIface<B> {
-    #[zbus(signal)]
-    #[zbus(name = "StateChanged")]
+    #[zbus(signal, name = "StateChanged")]
     async fn state_changed_signal(
         emitter: &SignalEmitter<'_>,
         state: u32,

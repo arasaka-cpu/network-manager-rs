@@ -384,6 +384,7 @@ dependencies = [
 name = "network-manager-rs"
 version = "0.1.0"
 dependencies = [
+ "futures-lite",
  "serde",
  "toml",
  "zbus",

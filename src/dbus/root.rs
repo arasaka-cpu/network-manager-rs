@@ -7,9 +7,9 @@
 
 use std::sync::Arc;
 
+use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedObjectPath;
-use zbus::interface;
 
 use crate::connection::activation::ActiveConnectionId;
 use crate::connection::profile::ConnectionProfile;
@@ -32,6 +32,15 @@ fn path_index(path: &str, prefix: &str) -> Option<u64> {
         .and_then(|part| part.parse().ok())
 }
 
+/// The daemon-wide `State` as NM_STATE_* from the current active connections.
+pub fn current_nm_state(daemon: &crate::daemon::Daemon<impl crate::daemon::NetworkBackend>) -> u32 {
+    if daemon.active_connections().is_empty() {
+        NM_STATE_DISCONNECTED
+    } else {
+        NM_STATE_CONNECTED_GLOBAL
+    }
+}
+
 /// The `org.freedesktop.NetworkManager` interface.
 pub struct RootIface<B> {
     shared: Arc<Shared<B>>,
@@ -42,13 +51,13 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
         Self { shared }
     }
 
-    fn device_info(&self, device: &str) -> Result<crate::connection::device::DeviceInfo, FacadeError> {
+    fn device_info(
+        &self,
+        device: &str,
+    ) -> Result<crate::connection::device::DeviceInfo, FacadeError> {
         let index = path_index(device, "/org/freedesktop/NetworkManager/Devices/")
             .ok_or_else(|| FacadeError::UnknownDevice(device.to_string()))?;
-        Ok(self
-            .shared
-            .device_view(index as i32)?
-            .to_device_info())
+        Ok(self.shared.device_view(index as i32)?.to_device_info())
     }
 
     fn active_id(&self, path: &str) -> Result<ActiveConnectionId, FacadeError> {
@@ -97,6 +106,7 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
             OwnedObjectPath::try_from(active_connection_path.clone())
                 .map_err(|e| FacadeError::Internal(e.to_string()))?,
         ))?;
+        self.shared.emit_connection_events()?;
         Ok((connection_path, active_connection_path))
     }
 
@@ -115,11 +125,14 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
     async fn state_changed(emitter: &SignalEmitter<'_>, state: u32) -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn device_added(emitter: &SignalEmitter<'_>, device: OwnedObjectPath) -> zbus::Result<()>;
+    async fn device_added(emitter: &SignalEmitter<'_>, device: OwnedObjectPath)
+    -> zbus::Result<()>;
 
     #[zbus(signal)]
-    async fn device_removed(emitter: &SignalEmitter<'_>, device: OwnedObjectPath)
-        -> zbus::Result<()>;
+    async fn device_removed(
+        emitter: &SignalEmitter<'_>,
+        device: OwnedObjectPath,
+    ) -> zbus::Result<()>;
 
     #[zbus(signal)]
     async fn active_connection_added(
@@ -145,10 +158,7 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
         self.get_devices()
     }
 
-    fn get_device_by_ip_iface(
-        &self,
-        iface: String,
-    ) -> Result<OwnedObjectPath, FacadeError> {
+    fn get_device_by_ip_iface(&self, iface: String) -> Result<OwnedObjectPath, FacadeError> {
         let index = self
             .shared
             .device_index_by_name(&iface)
@@ -174,6 +184,7 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
             OwnedObjectPath::try_from(path.clone())
                 .map_err(|e| FacadeError::Internal(e.to_string()))?,
         ))?;
+        self.shared.emit_connection_events()?;
         OwnedObjectPath::try_from(path).map_err(|error| FacadeError::Internal(error.to_string()))
     }
 
@@ -224,6 +235,7 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
         self.shared
             .daemon_mut()
             .deactivate(self.active_id(active.as_str())?)?;
+        self.shared.emit_connection_events()?;
         Ok(())
     }
 
@@ -241,17 +253,50 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
 
     fn get_permissions(&self) -> Vec<(String, String)> {
         vec![
-            ("org.freedesktop.NetworkManager.enable-disable-network".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.enable-disable-wifi".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.network-control".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.wifi.share.protected".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.wifi.share.open".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.settings.modify.system".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.settings.modify.own".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.reload".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.checkpoint-rollback".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.enable-disable-statistics".to_string(), "yes".to_string()),
-            ("org.freedesktop.NetworkManager.enable-disable-connectivity-check".to_string(), "yes".to_string()),
+            (
+                "org.freedesktop.NetworkManager.enable-disable-network".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.enable-disable-wifi".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.network-control".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.wifi.share.protected".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.wifi.share.open".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.settings.modify.system".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.settings.modify.own".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.reload".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.checkpoint-rollback".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.enable-disable-statistics".to_string(),
+                "yes".to_string(),
+            ),
+            (
+                "org.freedesktop.NetworkManager.enable-disable-connectivity-check".to_string(),
+                "yes".to_string(),
+            ),
         ]
     }
 
@@ -387,9 +432,8 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
             .active_connections()
             .first()
             .map(|active| {
-                OwnedObjectPath::try_from(active_path(active.id)).unwrap_or_else(|_| {
-                    super::root_object_path()
-                })
+                OwnedObjectPath::try_from(active_path(active.id))
+                    .unwrap_or_else(|_| super::root_object_path())
             })
             .unwrap_or(super::root_object_path())
     }
@@ -457,7 +501,9 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
     }
 
     #[zbus(property)]
-    fn global_dns_configuration(&self) -> std::collections::HashMap<String, zbus::zvariant::OwnedValue> {
+    fn global_dns_configuration(
+        &self,
+    ) -> std::collections::HashMap<String, zbus::zvariant::OwnedValue> {
         std::collections::HashMap::new()
     }
 }

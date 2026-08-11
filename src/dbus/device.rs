@@ -8,11 +8,12 @@
 use std::sync::Arc;
 
 use zbus::blocking::Connection;
+use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
-use zbus::interface;
 
 use crate::connection::device::{DeviceInfo, DeviceKind as DomainDeviceKind};
+use crate::connection::state::ConnectionState;
 use crate::daemon::Daemon;
 use crate::linux::model::format_mac_address;
 
@@ -20,9 +21,10 @@ use super::convert::SettingsDict;
 use super::error::FacadeError;
 use super::shared::Shared;
 use super::{
-    NM_CONNECTIVITY_FULL, NM_CONNECTIVITY_NONE, NM_DEVICE_STATE_ACTIVATED,
-    NM_DEVICE_STATE_DISCONNECTED, NM_DEVICE_STATE_UNAVAILABLE, NM_DEVICE_TYPE_ETHERNET,
-    NM_DEVICE_TYPE_LOOPBACK, NM_DEVICE_TYPE_WIFI,
+    NM_CONNECTIVITY_FULL, NM_CONNECTIVITY_NONE, NM_DEVICE_STATE_ACTIVATED, NM_DEVICE_STATE_CONFIG,
+    NM_DEVICE_STATE_DEACTIVATING, NM_DEVICE_STATE_DISCONNECTED, NM_DEVICE_STATE_FAILED,
+    NM_DEVICE_STATE_IP_CONFIG, NM_DEVICE_STATE_PREPARE, NM_DEVICE_STATE_UNAVAILABLE,
+    NM_DEVICE_TYPE_ETHERNET, NM_DEVICE_TYPE_LOOPBACK, NM_DEVICE_TYPE_WIFI,
 };
 
 /// The device types the facade can render.
@@ -116,6 +118,46 @@ pub fn enumerate_devices(
     Ok(devices)
 }
 
+/// Maps a connection lifecycle state to the device state the interface should
+/// be reported in for the duration of that lifecycle step.
+pub fn connection_to_device_state(state: ConnectionState) -> u32 {
+    use ConnectionState::*;
+    match state {
+        Preparing => NM_DEVICE_STATE_PREPARE,
+        Configuring => NM_DEVICE_STATE_CONFIG,
+        Activating => NM_DEVICE_STATE_IP_CONFIG,
+        Activated => NM_DEVICE_STATE_ACTIVATED,
+        Deactivating => NM_DEVICE_STATE_DEACTIVATING,
+        Failed => NM_DEVICE_STATE_FAILED,
+        Unknown | Disconnected => NM_DEVICE_STATE_DISCONNECTED,
+    }
+}
+
+/// Resolves the current device state for a registered device, mirroring
+/// [`DeviceIface::current_state`] from the daemon snapshot.
+pub fn device_state<B: crate::daemon::NetworkBackend + Send + Sync + 'static>(
+    shared: &Shared<B>,
+    index: i32,
+) -> Option<u32> {
+    let view = {
+        let daemon = shared.daemon();
+        enumerate_devices(&daemon)
+            .ok()?
+            .into_iter()
+            .find(|device| device.index == index)?
+    };
+    Some(match shared.device_active(&view.interface) {
+        Some(active)
+            if active.device.interface_name == view.interface
+                && active.state == ConnectionState::Activated =>
+        {
+            NM_DEVICE_STATE_ACTIVATED
+        }
+        _ if view.up => NM_DEVICE_STATE_DISCONNECTED,
+        _ => NM_DEVICE_STATE_UNAVAILABLE,
+    })
+}
+
 /// The base `org.freedesktop.NetworkManager.Device` interface.
 pub struct DeviceIface<B> {
     shared: Arc<Shared<B>>,
@@ -141,7 +183,9 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
         Ok(view)
     }
 
-    fn active(&self) -> Result<Option<crate::connection::activation::ActiveConnection>, FacadeError> {
+    fn active(
+        &self,
+    ) -> Result<Option<crate::connection::activation::ActiveConnection>, FacadeError> {
         let view = self.view()?;
         Ok(self.shared.device_active(&view.interface))
     }
@@ -167,8 +211,7 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
 
 #[interface(name = "org.freedesktop.NetworkManager.Device")]
 impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
-    #[zbus(signal)]
-    #[zbus(name = "StateChanged")]
+    #[zbus(signal, name = "StateChanged")]
     async fn state_changed_signal(
         emitter: &SignalEmitter<'_>,
         state: u32,
@@ -197,23 +240,23 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
         Err(FacadeError::not_supported("SetManaged"))
     }
 
-    fn disconnect(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), FacadeError> {
-        let current = self.current_state()?;
+    fn disconnect(
+        &self,
+        #[zbus(signal_emitter)] _emitter: SignalEmitter<'_>,
+    ) -> Result<(), FacadeError> {
         let iface = self.interface_name()?;
-        let active = self
-            .active()?
-            .ok_or(FacadeError::NotActive(iface))?;
+        let active = self.active()?.ok_or(FacadeError::NotActive(iface))?;
         self.shared.daemon_mut().deactivate(active.id)?;
-        let new = self.current_state()?;
-        super::emit(Self::state_changed_signal(&emitter, new, current, 0))?;
+        self.shared.emit_connection_events()?;
         Ok(())
     }
 
-    fn delete(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), FacadeError> {
+    fn delete(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), FacadeError> {
         let iface = self.interface_name()?;
-        let active = self
-            .active()?
-            .ok_or(FacadeError::NotActive(iface))?;
+        let active = self.active()?.ok_or(FacadeError::NotActive(iface))?;
         let profile_id = active.profile.id.clone();
         self.shared.daemon_mut().delete_profile(&profile_id)?;
         self.shared.unregister_connection(&profile_id)?;
@@ -248,11 +291,7 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
 
     #[zbus(property)]
     fn driver(&self) -> Result<String, zbus::fdo::Error> {
-        Ok(self
-            .view()?
-            .kind
-            .driver()
-            .to_string())
+        Ok(self.view()?.kind.driver().to_string())
     }
 
     #[zbus(property)]
@@ -289,7 +328,10 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
     fn active_connection(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
         Ok(self
             .active()?
-            .map(|active| OwnedObjectPath::try_from(super::active_path(active.id)).unwrap_or_else(|_| super::root_object_path()))
+            .map(|active| {
+                OwnedObjectPath::try_from(super::active_path(active.id))
+                    .unwrap_or_else(|_| super::root_object_path())
+            })
             .unwrap_or_else(super::root_object_path))
     }
 
@@ -297,7 +339,10 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
     fn ip4_config(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
         Ok(self
             .active()?
-            .map(|active| OwnedObjectPath::try_from(super::ip4_path(active.id)).unwrap_or_else(|_| super::root_object_path()))
+            .map(|active| {
+                OwnedObjectPath::try_from(super::ip4_path(active.id))
+                    .unwrap_or_else(|_| super::root_object_path())
+            })
             .unwrap_or_else(super::root_object_path))
     }
 
@@ -305,7 +350,10 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
     fn dhcp4_config(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
         Ok(self
             .active()?
-            .map(|active| OwnedObjectPath::try_from(super::dhcp4_path(active.id)).unwrap_or_else(|_| super::root_object_path()))
+            .map(|active| {
+                OwnedObjectPath::try_from(super::dhcp4_path(active.id))
+                    .unwrap_or_else(|_| super::root_object_path())
+            })
             .unwrap_or_else(super::root_object_path))
     }
 
@@ -313,7 +361,10 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
     fn ip6_config(&self) -> Result<OwnedObjectPath, zbus::fdo::Error> {
         Ok(self
             .active()?
-            .map(|active| OwnedObjectPath::try_from(super::ip6_path(active.id)).unwrap_or_else(|_| super::root_object_path()))
+            .map(|active| {
+                OwnedObjectPath::try_from(super::ip6_path(active.id))
+                    .unwrap_or_else(|_| super::root_object_path())
+            })
             .unwrap_or_else(super::root_object_path))
     }
 
