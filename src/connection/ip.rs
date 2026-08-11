@@ -273,7 +273,9 @@ impl From<io::Error> for DhcpError {
 #[derive(Debug)]
 pub enum DnsError {
     /// The DNS file is managed by something else and will not be overwritten.
-    ForeignManaged { path: String },
+    ForeignManaged {
+        path: String,
+    },
     Io(io::Error),
     InvalidConfig(&'static str),
 }
@@ -282,7 +284,10 @@ impl fmt::Display for DnsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ForeignManaged { path } => {
-                write!(f, "refusing to manage DNS: {path} is managed by another component")
+                write!(
+                    f,
+                    "refusing to manage DNS: {path} is managed by another component"
+                )
             }
             Self::Io(err) => write!(f, "DNS I/O failed: {err}"),
             Self::InvalidConfig(msg) => write!(f, "invalid DNS configuration: {msg}"),
@@ -303,15 +308,29 @@ impl From<io::Error> for DnsError {
 /// Implementations must be idempotent-friendly: removing state that is not
 /// present is reported as an error (never silently ignored).
 pub trait IpConfigurator {
-    fn configure_ipv4(&mut self, interface_index: i32, config: &Ipv4Config)
-        -> Result<(), IpConfigError>;
+    fn configure_ipv4(
+        &mut self,
+        interface_index: i32,
+        config: &Ipv4Config,
+    ) -> Result<(), IpConfigError>;
 
-    fn remove_ipv4(&mut self, interface_index: i32, config: &Ipv4Config) -> Result<(), IpConfigError>;
+    fn remove_ipv4(
+        &mut self,
+        interface_index: i32,
+        config: &Ipv4Config,
+    ) -> Result<(), IpConfigError>;
 
-    fn configure_ipv6(&mut self, interface_index: i32, config: &Ipv6Config)
-        -> Result<(), IpConfigError>;
+    fn configure_ipv6(
+        &mut self,
+        interface_index: i32,
+        config: &Ipv6Config,
+    ) -> Result<(), IpConfigError>;
 
-    fn remove_ipv6(&mut self, interface_index: i32, config: &Ipv6Config) -> Result<(), IpConfigError>;
+    fn remove_ipv6(
+        &mut self,
+        interface_index: i32,
+        config: &Ipv6Config,
+    ) -> Result<(), IpConfigError>;
 
     fn add_route(&mut self, route: &Route) -> Result<(), IpConfigError>;
 

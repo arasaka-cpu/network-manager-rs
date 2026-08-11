@@ -8,10 +8,10 @@
 use std::io;
 use std::net::Ipv4Addr;
 use std::os::raw::{c_int, c_void};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use network_manager_rs::linux::dhcp::packet::{self, DhcpMessageType, DhcpPacket};
@@ -45,10 +45,30 @@ struct PollFd {
 
 unsafe extern "C" {
     fn socket(domain: c_int, typ: c_int, protocol: c_int) -> c_int;
-    fn setsockopt(sockfd: c_int, level: c_int, optname: c_int, optval: *const c_void, optlen: u32) -> c_int;
+    fn setsockopt(
+        sockfd: c_int,
+        level: c_int,
+        optname: c_int,
+        optval: *const c_void,
+        optlen: u32,
+    ) -> c_int;
     fn bind(sockfd: c_int, addr: *const c_void, addrlen: u32) -> c_int;
-    fn sendto(sockfd: c_int, buf: *const c_void, len: usize, flags: c_int, dest: *const SockAddrIn, addrlen: u32) -> isize;
-    fn recvfrom(sockfd: c_int, buf: *mut c_void, len: usize, flags: c_int, src: *mut SockAddrIn, addrlen: *mut u32) -> isize;
+    fn sendto(
+        sockfd: c_int,
+        buf: *const c_void,
+        len: usize,
+        flags: c_int,
+        dest: *const SockAddrIn,
+        addrlen: u32,
+    ) -> isize;
+    fn recvfrom(
+        sockfd: c_int,
+        buf: *mut c_void,
+        len: usize,
+        flags: c_int,
+        src: *mut SockAddrIn,
+        addrlen: *mut u32,
+    ) -> isize;
     fn poll(fds: *mut PollFd, nfds: usize, timeout: c_int) -> c_int;
     fn close(fd: c_int) -> c_int;
 }
@@ -65,7 +85,16 @@ fn sockaddr(port: u16, address: Ipv4Addr) -> SockAddrIn {
 fn send_to(fd: c_int, bytes: &[u8], port: u16, address: Ipv4Addr) -> io::Result<()> {
     let dest = sockaddr(port, address);
     // SAFETY: bytes is readable, dest is a valid SockAddrIn for the call.
-    let n = unsafe { sendto(fd, bytes.as_ptr().cast(), bytes.len(), 0, &dest, size_of::<SockAddrIn>() as u32) };
+    let n = unsafe {
+        sendto(
+            fd,
+            bytes.as_ptr().cast(),
+            bytes.len(),
+            0,
+            &dest,
+            size_of::<SockAddrIn>() as u32,
+        )
+    };
     if n < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -126,14 +155,26 @@ fn run_inner(
     let interface_bytes = format!("{interface}\0");
     // SAFETY: interface_bytes is NUL-terminated and readable for the call.
     let rc = unsafe {
-        setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, interface_bytes.as_ptr().cast(), interface_bytes.len() as u32)
+        setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_BINDTODEVICE,
+            interface_bytes.as_ptr().cast(),
+            interface_bytes.len() as u32,
+        )
     };
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
     let local = sockaddr(67, Ipv4Addr::UNSPECIFIED);
     // SAFETY: local is a valid SockAddrIn for the call.
-    let rc = unsafe { bind(fd, (&local as *const SockAddrIn).cast(), size_of::<SockAddrIn>() as u32) };
+    let rc = unsafe {
+        bind(
+            fd,
+            (&local as *const SockAddrIn).cast(),
+            size_of::<SockAddrIn>() as u32,
+        )
+    };
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
@@ -142,7 +183,11 @@ fn run_inner(
 
     let mut buffer = [0_u8; 4096];
     while Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
-        let mut poll_fd = PollFd { fd, events: POLLIN, revents: 0 };
+        let mut poll_fd = PollFd {
+            fd,
+            events: POLLIN,
+            revents: 0,
+        };
         // SAFETY: poll_fd is a single valid PollFd.
         let ready = unsafe { poll(&mut poll_fd, 1, 1000) };
         if ready < 0 {
@@ -153,7 +198,16 @@ fn run_inner(
         }
         let mut address_len: u32 = size_of::<SockAddrIn>() as u32;
         // SAFETY: buffer is writable and large enough for any UDP datagram.
-        let n = unsafe { recvfrom(fd, buffer.as_mut_ptr().cast(), buffer.len(), 0, std::ptr::null_mut(), &mut address_len) };
+        let n = unsafe {
+            recvfrom(
+                fd,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                0,
+                std::ptr::null_mut(),
+                &mut address_len,
+            )
+        };
         if n < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -163,34 +217,56 @@ fn run_inner(
         };
         let mac = packet.hardware_address();
         let xid = packet.xid;
-        let requested_addr = packet
-            .get_option(50)
-            .and_then(|value| {
-                if value.len() == 4 {
-                    Some(Ipv4Addr::new(value[0], value[1], value[2], value[3]))
-                } else {
-                    None
-                }
-            });
+        let requested_addr = packet.get_option(50).and_then(|value| {
+            if value.len() == 4 {
+                Some(Ipv4Addr::new(value[0], value[1], value[2], value[3]))
+            } else {
+                None
+            }
+        });
         match packet.message_type() {
             DhcpMessageType::Discover => {
-                let _ = events.send(ServerEvent::Discover { xid, mac, requested_addr });
+                let _ = events.send(ServerEvent::Discover {
+                    xid,
+                    mac,
+                    requested_addr,
+                });
                 eprintln!("dhcp_test_server: DISCOVER xid=0x{xid:08x} mac={mac:02x?}");
-                let reply = DhcpPacket::build_reply(DhcpMessageType::Offer, xid, mac, OFFERED_ADDRESS, &lease_options());
+                let reply = DhcpPacket::build_reply(
+                    DhcpMessageType::Offer,
+                    xid,
+                    mac,
+                    OFFERED_ADDRESS,
+                    &lease_options(),
+                );
                 send_to(fd, &reply, 68, Ipv4Addr::BROADCAST)?;
                 eprintln!("dhcp_test_server: sent OFFER for {OFFERED_ADDRESS}");
             }
             DhcpMessageType::Request => {
-                let _ = events.send(ServerEvent::Request { xid, mac, requested_addr });
+                let _ = events.send(ServerEvent::Request {
+                    xid,
+                    mac,
+                    requested_addr,
+                });
                 eprintln!("dhcp_test_server: REQUEST xid=0x{xid:08x} mac={mac:02x?}");
-                let reply = DhcpPacket::build_reply(DhcpMessageType::Ack, xid, mac, OFFERED_ADDRESS, &lease_options());
+                let reply = DhcpPacket::build_reply(
+                    DhcpMessageType::Ack,
+                    xid,
+                    mac,
+                    OFFERED_ADDRESS,
+                    &lease_options(),
+                );
                 send_to(fd, &reply, 68, Ipv4Addr::BROADCAST)?;
             }
             DhcpMessageType::Release => {
                 let _ = events.send(ServerEvent::Release { xid, mac });
             }
             other => {
-                let _ = events.send(ServerEvent::Other { message_type: other, xid, mac });
+                let _ = events.send(ServerEvent::Other {
+                    message_type: other,
+                    xid,
+                    mac,
+                });
             }
         }
     }
@@ -227,10 +303,14 @@ pub enum ServerEvent {
 
 /// Drains `receiver` until `ShuttingDown` (or a timeout), returning every
 /// message class observed in order.
-pub fn collect_until_shutdown(receiver: &mpsc::Receiver<ServerEvent>, timeout: Duration) -> Vec<ServerEvent> {
+pub fn collect_until_shutdown(
+    receiver: &mpsc::Receiver<ServerEvent>,
+    timeout: Duration,
+) -> Vec<ServerEvent> {
     let deadline = Instant::now() + timeout;
     let mut seen = Vec::new();
-    while let Ok(event) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+    while let Ok(event) = receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+    {
         match event {
             ServerEvent::ShuttingDown => break,
             other => seen.push(other),
@@ -242,5 +322,11 @@ pub fn collect_until_shutdown(receiver: &mpsc::Receiver<ServerEvent>, timeout: D
 /// Builds a DNS `server=` hint map for `Dhcpv4Client::acquire`.
 #[allow(dead_code)]
 pub fn option_hints() -> std::collections::HashMap<u8, Vec<u8>> {
-    std::collections::HashMap::from([(1, Vec::new()), (3, Vec::new()), (6, Vec::new()), (15, Vec::new()), (51, Vec::new())])
+    std::collections::HashMap::from([
+        (1, Vec::new()),
+        (3, Vec::new()),
+        (6, Vec::new()),
+        (15, Vec::new()),
+        (51, Vec::new()),
+    ])
 }

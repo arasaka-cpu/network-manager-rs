@@ -8,16 +8,14 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use network_manager_rs::connection::profile::{IpConfig, IpMethod};
-use network_manager_rs::linux::ip_engine::{resolve_interface_index, LinuxIpEngine};
+use network_manager_rs::linux::ip_engine::{LinuxIpEngine, resolve_interface_index};
 use network_manager_rs::linux::netlink::{get_addresses, get_links};
 
 fn main() {
-    let interface = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| {
-            eprintln!("usage: nmd_ip_engine_demo <ifname> <auto|manual>");
-            std::process::exit(2);
-        });
+    let interface = std::env::args().nth(1).unwrap_or_else(|| {
+        eprintln!("usage: nmd_ip_engine_demo <ifname> <auto|manual>");
+        std::process::exit(2);
+    });
     let mode = std::env::args().nth(2).unwrap_or_else(|| {
         eprintln!("usage: nmd_ip_engine_demo <ifname> <auto|manual>");
         std::process::exit(2);
@@ -111,7 +109,7 @@ fn kernel_has_address(interface_name: &str, address: Ipv4Addr) -> bool {
     let Ok(addresses) = get_addresses() else {
         return false;
     };
-    addresses
-        .iter()
-        .any(|entry| entry.interface_index == index.index as u32 && entry.address == IpAddr::V4(address))
+    addresses.iter().any(|entry| {
+        entry.interface_index == index.index as u32 && entry.address == IpAddr::V4(address)
+    })
 }

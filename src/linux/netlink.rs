@@ -429,7 +429,13 @@ pub(crate) fn open_socket_with_groups(protocol: i32, groups: u32) -> Result<Owne
         nl_groups: groups,
     };
     // SAFETY: addr points to a valid SockAddrNl for the duration of the call.
-    let rc = unsafe { bind(fd.as_raw_fd(), (&addr as *const SockAddrNl).cast(), size_of::<SockAddrNl>() as u32) };
+    let rc = unsafe {
+        bind(
+            fd.as_raw_fd(),
+            (&addr as *const SockAddrNl).cast(),
+            size_of::<SockAddrNl>() as u32,
+        )
+    };
     if rc < 0 {
         return Err(io::Error::last_os_error().into());
     }
@@ -1626,7 +1632,10 @@ mod tests {
         );
         let header = read_unaligned::<NlMsgHdr>(&message).unwrap();
         assert_eq!(header.nlmsg_type, RTM_NEWADDR);
-        assert_eq!(header.nlmsg_flags, NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK);
+        assert_eq!(
+            header.nlmsg_flags,
+            NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK
+        );
         assert_eq!(header.nlmsg_len as usize, message.len());
         let info = read_unaligned::<IfAddrMsg>(&message[size_of::<NlMsgHdr>()..]).unwrap();
         assert_eq!(info.ifa_family, AF_INET);
@@ -1645,7 +1654,10 @@ mod tests {
                 RT_TABLE_MAIN,
                 RT_SCOPE_LINK,
                 RTN_UNICAST,
-                &[(RTA_DST, vec![192, 168, 5, 0]), (RTA_OIF, 5_i32.to_ne_bytes().to_vec())],
+                &[
+                    (RTA_DST, vec![192, 168, 5, 0]),
+                    (RTA_OIF, 5_i32.to_ne_bytes().to_vec()),
+                ],
             ),
         );
         let info = read_unaligned::<RtMsg>(&message[size_of::<NlMsgHdr>()..]).unwrap();

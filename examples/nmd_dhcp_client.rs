@@ -11,15 +11,18 @@ use network_manager_rs::linux::ipconfig::LinuxIpConfigurator;
 use network_manager_rs::linux::netlink::get_links;
 
 fn main() {
-    let interface = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| {
-            eprintln!("usage: nmd_dhcp_client <ifname> [timeout_seconds]");
-            std::process::exit(2);
-        });
+    let interface = std::env::args().nth(1).unwrap_or_else(|| {
+        eprintln!("usage: nmd_dhcp_client <ifname> [timeout_seconds]");
+        std::process::exit(2);
+    });
     let interface_index = get_links()
         .ok()
-        .and_then(|links| links.into_iter().find(|link| link.name == interface).map(|link| link.index))
+        .and_then(|links| {
+            links
+                .into_iter()
+                .find(|link| link.name == interface)
+                .map(|link| link.index)
+        })
         .unwrap_or(-1);
     let timeout_seconds = std::env::args()
         .nth(2)

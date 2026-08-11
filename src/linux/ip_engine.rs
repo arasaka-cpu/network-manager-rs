@@ -20,7 +20,7 @@ use std::fmt;
 use std::net::{IpAddr, Ipv4Addr};
 
 use crate::connection::ip::{
-    ActiveIpState, ActiveIpv4, ActiveIpv6, ActivationOutcome, DhcpClient, DhcpError, DhcpRequest,
+    ActivationOutcome, ActiveIpState, ActiveIpv4, ActiveIpv6, DhcpClient, DhcpError, DhcpRequest,
     DnsConfig, DnsError, DnsManager, IpConfigError, IpConfigurator, Ipv4Config, Ipv4Outcome,
     Ipv4Source, Ipv6Config, Ipv6Source,
 };
@@ -155,7 +155,14 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
         let mut state = ActiveIpState::default();
         let mut outcome = ActivationOutcome::default();
 
-        self.activate_ipv4(interface_index, interface_name, ipv4, dns_owner, &mut state, &mut outcome)?;
+        self.activate_ipv4(
+            interface_index,
+            interface_name,
+            ipv4,
+            dns_owner,
+            &mut state,
+            &mut outcome,
+        )?;
         self.activate_ipv6(interface_index, ipv6, &mut state, &mut outcome)?;
         Ok((outcome, state))
     }
@@ -172,24 +179,21 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
         match ipv4.method {
             IpMethod::Disabled => return Ok(()),
             IpMethod::Automatic => {
-                let lease = self
-                    .dhcp
-                    .acquire(&DhcpRequest {
-                        interface_index,
-                        interface_name: interface_name.to_string(),
-                        hostname: None,
-                        requested_address: None,
-                        timeout: std::time::Duration::default(),
-                    })?;
-                self.ip
-                    .configure_ipv4(
-                        interface_index,
-                        &Ipv4Config {
-                            address: lease.address,
-                            prefix_length: lease.prefix_length,
-                            gateway: lease.gateway,
-                        },
-                    )?;
+                let lease = self.dhcp.acquire(&DhcpRequest {
+                    interface_index,
+                    interface_name: interface_name.to_string(),
+                    hostname: None,
+                    requested_address: None,
+                    timeout: std::time::Duration::default(),
+                })?;
+                self.ip.configure_ipv4(
+                    interface_index,
+                    &Ipv4Config {
+                        address: lease.address,
+                        prefix_length: lease.prefix_length,
+                        gateway: lease.gateway,
+                    },
+                )?;
                 let dns_config = DnsConfig {
                     search_domains: lease.search_domains.clone(),
                     servers: lease
@@ -198,11 +202,12 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
                         .map(|server| IpAddr::V4(*server))
                         .collect(),
                 };
-                let dns_ownership = if dns_config.servers.is_empty() && dns_config.search_domains.is_empty() {
-                    None
-                } else {
-                    Some(self.dns.apply(dns_owner, &dns_config)?)
-                };
+                let dns_ownership =
+                    if dns_config.servers.is_empty() && dns_config.search_domains.is_empty() {
+                        None
+                    } else {
+                        Some(self.dns.apply(dns_owner, &dns_config)?)
+                    };
                 state.ipv4 = Some(ActiveIpv4 {
                     interface_index,
                     address: lease.address,
@@ -233,30 +238,32 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
                     .ok_or({
                         IpEngineError::InvalidConfig("manual IPv4 needs a valid IPv4 address")
                     })?;
-                let prefix_length = ipv4.prefix_length.ok_or({
-                    IpEngineError::InvalidConfig("manual IPv4 needs a prefix length")
-                })?;
+                let prefix_length = ipv4
+                    .prefix_length
+                    .ok_or({ IpEngineError::InvalidConfig("manual IPv4 needs a prefix length") })?;
                 let gateway = ipv4.gateway.and_then(|gateway| match gateway {
                     IpAddr::V4(address) => Some(address),
                     IpAddr::V6(_) => None,
                 });
-                self.ip
-                    .configure_ipv4(
-                        interface_index,
-                        &Ipv4Config {
-                            address,
-                            prefix_length,
-                            gateway,
-                        },
-                    )?;
+                self.ip.configure_ipv4(
+                    interface_index,
+                    &Ipv4Config {
+                        address,
+                        prefix_length,
+                        gateway,
+                    },
+                )?;
                 let servers: Vec<IpAddr> = ipv4.dns_servers.clone();
                 let dns_ownership = if servers.is_empty() {
                     None
                 } else {
-                    Some(self.dns.apply(dns_owner, &DnsConfig {
-                        search_domains: Vec::new(),
-                        servers,
-                    })?)
+                    Some(self.dns.apply(
+                        dns_owner,
+                        &DnsConfig {
+                            search_domains: Vec::new(),
+                            servers,
+                        },
+                    )?)
                 };
                 state.ipv4 = Some(ActiveIpv4 {
                     interface_index,
@@ -312,7 +319,7 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
                         _ => {
                             return Err(IpEngineError::InvalidConfig(
                                 "manual IPv6 needs a valid IPv6 address",
-                            ))
+                            ));
                         }
                     },
                     prefix_length: ipv6.prefix_length.ok_or({
@@ -388,7 +395,10 @@ impl<C: IpConfigurator, D: DhcpClient, N: DnsManager> LinuxIpEngine<C, D, N> {
     }
 }
 
-fn default_route_for(interface_index: i32, gateway: Option<Ipv4Addr>) -> Vec<crate::linux::model::Route> {
+fn default_route_for(
+    interface_index: i32,
+    gateway: Option<Ipv4Addr>,
+) -> Vec<crate::linux::model::Route> {
     use crate::linux::model::{IpFamily, RouteKind, RouteScope};
     match gateway {
         Some(gateway) => vec![crate::linux::model::Route {
@@ -521,7 +531,10 @@ mod tests {
         }
 
         fn release(&mut self, lease: &crate::connection::ip::DhcpLease) -> Result<(), DhcpError> {
-            self.record.borrow_mut().released.push(lease.interface_name.clone());
+            self.record
+                .borrow_mut()
+                .released
+                .push(lease.interface_name.clone());
             Ok(())
         }
     }
@@ -541,7 +554,10 @@ mod tests {
         }
 
         fn remove(&mut self, ownership: &DnsOwnership) -> Result<(), DnsError> {
-            self.record.borrow_mut().dns_removed.push(ownership.owner.clone());
+            self.record
+                .borrow_mut()
+                .dns_removed
+                .push(ownership.owner.clone());
             Ok(())
         }
     }
@@ -556,9 +572,15 @@ mod tests {
         fn new() -> Self {
             let record = Rc::new(RefCell::new(Recording::default()));
             let engine = LinuxIpEngine::with_components(
-                FakeIpConfigurator { record: record.clone() },
-                FakeDhcpClient { record: record.clone() },
-                FakeDnsManager { record: record.clone() },
+                FakeIpConfigurator {
+                    record: record.clone(),
+                },
+                FakeDhcpClient {
+                    record: record.clone(),
+                },
+                FakeDnsManager {
+                    record: record.clone(),
+                },
             );
             Self { engine, record }
         }
@@ -593,7 +615,13 @@ mod tests {
         let mut harness = Harness::new();
         let (outcome, state) = harness
             .engine
-            .activate(1, "veth0", &automatic_config(), &IpConfig::default(), "profile-dhcp")
+            .activate(
+                1,
+                "veth0",
+                &automatic_config(),
+                &IpConfig::default(),
+                "profile-dhcp",
+            )
             .unwrap();
 
         let record = harness.record.borrow();
@@ -605,7 +633,10 @@ mod tests {
         let ipv4 = outcome.ipv4.expect("automatic outcome has ipv4");
         assert_eq!(ipv4.address, Ipv4Addr::new(10, 99, 0, 50));
         assert_eq!(ipv4.gateway, Some(Ipv4Addr::new(10, 99, 0, 1)));
-        assert_eq!(ipv4.dns_servers, vec![IpAddr::V4(Ipv4Addr::new(10, 99, 0, 1))]);
+        assert_eq!(
+            ipv4.dns_servers,
+            vec![IpAddr::V4(Ipv4Addr::new(10, 99, 0, 1))]
+        );
         assert_eq!(ipv4.search_domains, vec!["nmd.test"]);
         assert_eq!(ipv4.source, Ipv4Source::AutomaticDhcp);
 
@@ -621,7 +652,13 @@ mod tests {
         let mut harness = Harness::new();
         let (outcome, state) = harness
             .engine
-            .activate(1, "eth0", &manual_config(), &IpConfig::default(), "profile-manual")
+            .activate(
+                1,
+                "eth0",
+                &manual_config(),
+                &IpConfig::default(),
+                "profile-manual",
+            )
             .unwrap();
 
         let record = harness.record.borrow();
@@ -656,7 +693,13 @@ mod tests {
         let mut harness = Harness::new();
         let (outcome, state) = harness
             .engine
-            .activate(1, "eth0", &disabled_config(), &IpConfig::default(), "profile-off")
+            .activate(
+                1,
+                "eth0",
+                &disabled_config(),
+                &IpConfig::default(),
+                "profile-off",
+            )
             .unwrap();
         assert!(outcome.ipv4.is_none());
         assert!(state.ipv4.is_none());
@@ -670,7 +713,13 @@ mod tests {
         harness.record.borrow_mut().fail_acquire = true;
         let err = harness
             .engine
-            .activate(1, "eth0", &automatic_config(), &IpConfig::default(), "profile-dhcp")
+            .activate(
+                1,
+                "eth0",
+                &automatic_config(),
+                &IpConfig::default(),
+                "profile-dhcp",
+            )
             .unwrap_err();
         assert!(matches!(err, IpEngineError::Dhcp(_)));
         assert!(harness.record.borrow().configured.is_empty());
@@ -682,7 +731,13 @@ mod tests {
         let mut harness = Harness::new();
         let (_, state) = harness
             .engine
-            .activate(1, "veth0", &automatic_config(), &IpConfig::default(), "profile-dhcp")
+            .activate(
+                1,
+                "veth0",
+                &automatic_config(),
+                &IpConfig::default(),
+                "profile-dhcp",
+            )
             .unwrap();
         harness.engine.teardown(&state).unwrap();
 

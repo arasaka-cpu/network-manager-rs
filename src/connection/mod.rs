@@ -26,7 +26,7 @@ pub use activation::{
 };
 pub use device::{DeviceInfo, DeviceKind, MacAddress};
 pub use ip::{
-    ActiveIpState, ActiveIpv4, ActiveIpv6, ActivationOutcome, Degradation, DhcpClient, DhcpError,
+    ActivationOutcome, ActiveIpState, ActiveIpv4, ActiveIpv6, Degradation, DhcpClient, DhcpError,
     DhcpLease, DhcpRequest, DnsConfig, DnsError, DnsManager, DnsOwnership, IpConfigError,
     IpConfigurator, Ipv4Config, Ipv4Outcome, Ipv4Source, Ipv6Config, Ipv6Outcome, Ipv6Source,
 };

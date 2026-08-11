@@ -112,18 +112,20 @@ impl From<ActivationError> for FacadeError {
     fn from(value: ActivationError) -> Self {
         match value {
             ActivationError::ProfileNotFound(id) => Self::UnknownConnection(id),
-            ActivationError::DeviceIncompatible { profile_id, device } => Self::InvalidProperty(
-                format!(
+            ActivationError::DeviceIncompatible { profile_id, device } => {
+                Self::InvalidProperty(format!(
                     "profile {profile_id:?} does not match device {} ({})",
                     device.interface_name, device.kind
-                ),
-            ),
+                ))
+            }
             ActivationError::NoSuitableProfile(device) => Self::InvalidSetting(format!(
                 "no suitable connection profile for device {} ({})",
                 device.interface_name, device.kind
             )),
             ActivationError::AlreadyActive(id) => Self::AlreadyActive(id),
-            ActivationError::UnknownActiveConnection(id) => Self::UnknownActiveConnection(id.to_string()),
+            ActivationError::UnknownActiveConnection(id) => {
+                Self::UnknownActiveConnection(id.to_string())
+            }
             ActivationError::InvalidState { active_id, .. } => {
                 Self::NotActive(format!("active connection {active_id} is not active"))
             }

@@ -16,7 +16,7 @@ use std::net::Ipv4Addr;
 use std::os::raw::{c_int, c_void};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use packet::{DhcpMessageType, DhcpPacket, BOOTP_CLIENT_PORT, BOOTP_SERVER_PORT};
+use packet::{BOOTP_CLIENT_PORT, BOOTP_SERVER_PORT, DhcpMessageType, DhcpPacket};
 
 use crate::connection::ip::{DhcpClient, DhcpError, DhcpLease, DhcpRequest};
 
@@ -85,32 +85,32 @@ fn sockaddr(port: u16, address: [u8; 4]) -> SockAddrIn {
     }
 }
 
-fn set_socket_option(fd: c_int, level: c_int, option: c_int, value: &[u8]) -> Result<(), io::Error> {
+fn set_socket_option(
+    fd: c_int,
+    level: c_int,
+    option: c_int,
+    value: &[u8],
+) -> Result<(), io::Error> {
     // SAFETY: setsockopt copies optlen bytes from value; value outlives the call.
-    let rc = unsafe {
-        setsockopt(
-            fd,
-            level,
-            option,
-            value.as_ptr().cast(),
-            value.len() as u32,
-        )
-    };
+    let rc = unsafe { setsockopt(fd, level, option, value.as_ptr().cast(), value.len() as u32) };
     if rc < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
 }
 
-fn set_int_socket_option(fd: c_int, level: c_int, option: c_int, value: i32) -> Result<(), io::Error> {
+fn set_int_socket_option(
+    fd: c_int,
+    level: c_int,
+    option: c_int,
+    value: i32,
+) -> Result<(), io::Error> {
     set_socket_option(fd, level, option, &value.to_ne_bytes())
 }
 
 /// Reads the interface MAC address from sysfs (`/sys/class/net/<name>/address`).
 pub fn read_mac_address(interface_name: &str) -> Result<[u8; 6], DhcpError> {
-    let contents = std::fs::read_to_string(format!(
-        "/sys/class/net/{interface_name}/address"
-    ))?;
+    let contents = std::fs::read_to_string(format!("/sys/class/net/{interface_name}/address"))?;
     let contents = contents.trim();
     let mut bytes = [0_u8; 6];
     let mut iter = contents.split(':');
@@ -257,7 +257,13 @@ impl Dhcpv4Client {
         set_socket_option(fd, SOL_SOCKET, SO_BINDTODEVICE, interface_bytes.as_bytes())?;
         let local = sockaddr(BOOTP_CLIENT_PORT, INADDR_ANY);
         // SAFETY: local is a valid SockAddrIn for the duration of the call.
-        let rc = unsafe { bind(fd, (&local as *const SockAddrIn).cast(), size_of::<SockAddrIn>() as u32) };
+        let rc = unsafe {
+            bind(
+                fd,
+                (&local as *const SockAddrIn).cast(),
+                size_of::<SockAddrIn>() as u32,
+            )
+        };
         if rc < 0 {
             // SAFETY: fd was created by socket() above and is no longer needed on error.
             unsafe { close(fd) };
@@ -300,11 +306,11 @@ impl DhcpClient for Dhcpv4Client {
         if offered_address.is_none() || offered_address == Some(Ipv4Addr::UNSPECIFIED) {
             // SAFETY: fd was created by open_socket() and is closed exactly once here.
             unsafe { close(fd) };
-            return Err(DhcpError::MalformedPacket("DHCPOFFER carried no usable address"));
+            return Err(DhcpError::MalformedPacket(
+                "DHCPOFFER carried no usable address",
+            ));
         }
-        let server_identifier = offer
-            .server_identifier()
-            .or_else(|| offer.source_address());
+        let server_identifier = offer.server_identifier().or_else(|| offer.source_address());
 
         // A freshly booted client has no address yet, so it cannot unicast a
         // REQUEST to the server; broadcast it (RFC 2131 section 4.3.2).
@@ -333,11 +339,7 @@ impl DhcpClient for Dhcpv4Client {
                 ));
             }
         }
-        let lease = ack.to_lease(
-            request.interface_index,
-            &request.interface_name,
-            mac,
-        )?;
+        let lease = ack.to_lease(request.interface_index, &request.interface_name, mac)?;
         // SAFETY: fd was created by open_socket() and is closed exactly once here.
         unsafe { close(fd) };
         Ok(lease)
@@ -347,9 +349,7 @@ impl DhcpClient for Dhcpv4Client {
         let mac = read_mac_address(&lease.interface_name)?;
         let xid = transaction_id();
         let fd = self.open_socket(&lease.interface_name)?;
-        let server = lease
-            .server_identifier
-            .unwrap_or(Ipv4Addr::BROADCAST);
+        let server = lease.server_identifier.unwrap_or(Ipv4Addr::BROADCAST);
         let packet = DhcpPacket::build_release(xid, mac, lease.address, server);
         let result = send_packet(fd, &packet, BOOTP_SERVER_PORT, server.octets());
         // SAFETY: fd was created by open_socket() and is closed exactly once here.

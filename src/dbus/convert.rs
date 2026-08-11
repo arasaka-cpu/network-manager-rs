@@ -102,7 +102,10 @@ fn get_bytes(section: &HashMap<String, OwnedValue>, key: &str) -> Option<Vec<u8>
     Vec::<u8>::try_from(value).ok()
 }
 
-fn get_dict_array(section: &HashMap<String, OwnedValue>, key: &str) -> Option<Vec<HashMap<String, OwnedValue>>> {
+fn get_dict_array(
+    section: &HashMap<String, OwnedValue>,
+    key: &str,
+) -> Option<Vec<HashMap<String, OwnedValue>>> {
     let value = as_value(section.get(key)?);
     Vec::<HashMap<String, OwnedValue>>::try_from(value).ok()
 }
@@ -142,7 +145,7 @@ fn parse_key_management(value: &str) -> Result<WifiSecurity, FacadeError> {
         other => {
             return Err(FacadeError::InvalidSetting(format!(
                 "unsupported key management {other:?}"
-            )))
+            )));
         }
     };
     Ok(security)
@@ -172,16 +175,16 @@ pub fn profile_to_settings(profile: &ConnectionProfile) -> SettingsDict {
     match &profile.connection_type {
         ConnectionType::Wifi(settings) => {
             let mut wifi = HashMap::new();
-            wifi.insert("ssid".to_string(), val_bytes(settings.ssid.as_bytes().to_vec()));
+            wifi.insert(
+                "ssid".to_string(),
+                val_bytes(settings.ssid.as_bytes().to_vec()),
+            );
             wifi.insert("mode".to_string(), val_str("infrastructure"));
             if settings.hidden {
                 wifi.insert("hidden".to_string(), val_bool(true));
             }
             if !matches!(settings.security.key_management, KeyManagement::Open) {
-                wifi.insert(
-                    "security".to_string(),
-                    val_str("802-11-wireless-security"),
-                );
+                wifi.insert("security".to_string(), val_str("802-11-wireless-security"));
             }
             dict.insert("802-11-wireless".to_string(), wifi);
 
@@ -226,7 +229,13 @@ fn ip_config_section(config: &IpConfig) -> HashMap<String, OwnedValue> {
         if !config.dns_servers.is_empty() {
             section.insert(
                 "dns".to_string(),
-                val_str_array(config.dns_servers.iter().map(|server| server.to_string()).collect()),
+                val_str_array(
+                    config
+                        .dns_servers
+                        .iter()
+                        .map(|server| server.to_string())
+                        .collect(),
+                ),
             );
         }
     }
@@ -251,9 +260,9 @@ pub fn settings_to_profile(dict: &SettingsDict) -> Result<ConnectionProfile, Fac
 
     let profile = match type_name.as_str() {
         "802-11-wireless" => {
-            let wifi = dict.get("802-11-wireless").ok_or_else(|| {
-                FacadeError::MissingSetting("802-11-wireless".to_string())
-            })?;
+            let wifi = dict
+                .get("802-11-wireless")
+                .ok_or_else(|| FacadeError::MissingSetting("802-11-wireless".to_string()))?;
             let ssid_bytes = get_bytes(wifi, "ssid").ok_or_else(|| {
                 FacadeError::InvalidProperty("802-11-wireless.ssid is required".to_string())
             })?;
@@ -267,13 +276,11 @@ pub fn settings_to_profile(dict: &SettingsDict) -> Result<ConnectionProfile, Fac
             let security = parse_key_management(&key_management)?;
             ConnectionProfile::wifi(id, name, ssid, security).map_err(FacadeError::from)?
         }
-        "802-3-ethernet" => {
-            ConnectionProfile::ethernet(id, name).map_err(FacadeError::from)?
-        }
+        "802-3-ethernet" => ConnectionProfile::ethernet(id, name).map_err(FacadeError::from)?,
         other => {
             return Err(FacadeError::InvalidSetting(format!(
                 "unsupported connection type {other:?}"
-            )))
+            )));
         }
     };
 
@@ -311,12 +318,13 @@ fn parse_ip_config(
         other => {
             return Err(FacadeError::InvalidSetting(format!(
                 "unsupported IP method {other:?}"
-            )))
+            )));
         }
     };
     if config.method == IpMethod::Manual {
-        let address_data = get_dict_array(section, "address-data")
-            .ok_or_else(|| FacadeError::MissingSetting("ip method requires address-data".to_string()))?;
+        let address_data = get_dict_array(section, "address-data").ok_or_else(|| {
+            FacadeError::MissingSetting("ip method requires address-data".to_string())
+        })?;
         let first = address_data.first().ok_or_else(|| {
             FacadeError::MissingSetting("manual IP configuration requires an address".to_string())
         })?;
@@ -384,7 +392,9 @@ mod tests {
     use std::net::IpAddr;
 
     use super::{profile_to_settings, settings_to_profile, stable_uuid};
-    use crate::connection::profile::{ConnectionProfile, ConnectionType, IpConfig, IpMethod, WifiSecurity};
+    use crate::connection::profile::{
+        ConnectionProfile, ConnectionType, IpConfig, IpMethod, WifiSecurity,
+    };
     use crate::connection::secrets::SecretReference;
     use crate::linux::model::Ssid;
 
@@ -445,7 +455,10 @@ mod tests {
         let dict = profile_to_settings(&open_profile("open"));
         assert!(!dict.contains_key("802-11-wireless-security"));
         let decoded = settings_to_profile(&dict).unwrap();
-        assert_eq!(decoded.connection_type, open_profile("open").connection_type);
+        assert_eq!(
+            decoded.connection_type,
+            open_profile("open").connection_type
+        );
     }
 
     #[test]

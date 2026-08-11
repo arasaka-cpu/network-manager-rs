@@ -14,15 +14,13 @@ use std::time::Duration;
 
 use crate::connection::activation::{ActivationEngine, ActivationError};
 use crate::connection::device::DeviceInfo;
-use crate::connection::ip::{
-    ActiveIpState, DhcpClient, DnsManager, IpConfigurator,
-};
+use crate::connection::ip::{ActiveIpState, DhcpClient, DnsManager, IpConfigurator};
 use crate::connection::profile::ConnectionProfile;
 use crate::connection::secrets::SecretProvider;
 use crate::connection::supplicant_engine::WpaSupplicantActivationEngine;
 use crate::linux::dhcp::Dhcpv4Client;
 use crate::linux::dns::LinuxDnsManager;
-use crate::linux::ip_engine::{resolve_interface_index, IpEngineError, LinuxIpEngine};
+use crate::linux::ip_engine::{IpEngineError, LinuxIpEngine, resolve_interface_index};
 use crate::linux::ipconfig::LinuxIpConfigurator;
 use crate::linux::supplicant::SupplicantControl;
 
@@ -107,7 +105,8 @@ where
                 "an activation is already in progress".to_string(),
             ));
         }
-        let interface_index = resolve_interface_index(&device.interface_name).map_err(engine_err)?;
+        let interface_index =
+            resolve_interface_index(&device.interface_name).map_err(engine_err)?;
         // Bring the 802.11 link up first; IP configuration depends on it.
         self.supplicant.activate(profile, device)?;
 
@@ -267,10 +266,7 @@ mod tests {
     }
 
     impl DhcpClient for FakeDhcpClient {
-        fn acquire(
-            &mut self,
-            request: &DhcpRequest,
-        ) -> Result<DhcpLease, DhcpError> {
+        fn acquire(&mut self, request: &DhcpRequest) -> Result<DhcpLease, DhcpError> {
             let mut record = self.record.lock().unwrap();
             if record.fail_dhcp {
                 return Err(DhcpError::Timeout {
@@ -326,7 +322,9 @@ mod tests {
             let record = Arc::new(Mutex::new(Recording::default()));
             let ip = LinuxIpEngine::with_components(
                 FakeIpConfigurator,
-                FakeDhcpClient { record: record.clone() },
+                FakeDhcpClient {
+                    record: record.clone(),
+                },
                 FakeDnsManager,
             );
             let control: Box<dyn SupplicantControl> = Box::new(OkControl {
@@ -403,7 +401,10 @@ mod tests {
         assert!(matches!(err, ActivationError::Engine(_)));
 
         let record = harness.record.lock().unwrap();
-        assert_eq!(record.disconnect_count, 1, "link is torn down on IP failure");
+        assert_eq!(
+            record.disconnect_count, 1,
+            "link is torn down on IP failure"
+        );
         assert_eq!(record.networks_removed, 1);
     }
 
@@ -450,7 +451,8 @@ mod tests {
     fn ip_engine_error_impl_is_self_describing() {
         let err = IpEngineError::InterfaceNotFound("ghost0".to_string());
         assert!(err.to_string().contains("ghost0"));
-        let err: IpEngineError = crate::linux::model::NetlinkError::Io(std::io::Error::other("test")).into();
+        let err: IpEngineError =
+            crate::linux::model::NetlinkError::Io(std::io::Error::other("test")).into();
         assert!(err.to_string().contains("test"));
     }
 }

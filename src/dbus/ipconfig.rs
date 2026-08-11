@@ -16,8 +16,8 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 
-use zbus::zvariant::{OwnedValue, Str};
 use zbus::interface;
+use zbus::zvariant::{OwnedValue, Str};
 
 use crate::connection::activation::ActiveConnectionId;
 use crate::connection::ip::{Ipv4Outcome, Ipv6Outcome};
@@ -106,14 +106,14 @@ fn route_data_entry(route: &Route) -> HashMap<String, OwnedValue> {
         "dest".to_string(),
         val_str(network_address(route.destination, route.prefix_length).to_string()),
     );
-    entry.insert("prefix".to_string(), val_u32(u32::from(route.prefix_length)));
+    entry.insert(
+        "prefix".to_string(),
+        val_u32(u32::from(route.prefix_length)),
+    );
     if let Some(gateway) = route.gateway {
         entry.insert("next-hop".to_string(), val_str(gateway.to_string()));
     }
-    entry.insert(
-        "metric".to_string(),
-        val_u32(route.metric.unwrap_or(0)),
-    );
+    entry.insert("metric".to_string(), val_u32(route.metric.unwrap_or(0)));
     entry
 }
 
@@ -125,15 +125,21 @@ fn v6_route_data(ipv6: &Ipv6Outcome) -> Vec<HashMap<String, OwnedValue>> {
     ipv6.routes.iter().map(route_data_entry).collect()
 }
 
-fn address_entries(address: Option<IpAddr>, prefix: Option<u8>) -> Vec<HashMap<String, OwnedValue>> {
-    address.map(|address| {
-        let mut entry = HashMap::new();
-        entry.insert("address".to_string(), val_str(address.to_string()));
-        if let Some(prefix) = prefix {
-            entry.insert("prefix".to_string(), val_u32(u32::from(prefix)));
-        }
-        entry
-    }).into_iter().collect()
+fn address_entries(
+    address: Option<IpAddr>,
+    prefix: Option<u8>,
+) -> Vec<HashMap<String, OwnedValue>> {
+    address
+        .map(|address| {
+            let mut entry = HashMap::new();
+            entry.insert("address".to_string(), val_str(address.to_string()));
+            if let Some(prefix) = prefix {
+                entry.insert("prefix".to_string(), val_u32(u32::from(prefix)));
+            }
+            entry
+        })
+        .into_iter()
+        .collect()
 }
 
 /// Renders `NameserverData` (`aa{sv}`) for a list of IPv4 servers, matching the
@@ -187,7 +193,9 @@ impl<B: NetworkBackend + Send + Sync + 'static> Ip4ConfigIface<B> {
     }
 
     fn outcome(&self) -> Option<Ipv4Outcome> {
-        self.shared.active_by_id(self.id).and_then(|active| active.outcome.ipv4)
+        self.shared
+            .active_by_id(self.id)
+            .and_then(|active| active.outcome.ipv4)
     }
 }
 
@@ -195,13 +203,15 @@ impl<B: NetworkBackend + Send + Sync + 'static> Ip4ConfigIface<B> {
 impl<B: NetworkBackend + Send + Sync + 'static> Ip4ConfigIface<B> {
     #[zbus(property)]
     fn addresses(&self) -> Vec<Vec<u32>> {
-        self.outcome().map(|ipv4| {
-            vec![vec![
-                ipv4_u32(ipv4.address),
-                u32::from(ipv4.prefix_length),
-                ipv4.gateway.map(ipv4_u32).unwrap_or(0),
-            ]]
-        }).unwrap_or_default()
+        self.outcome()
+            .map(|ipv4| {
+                vec![vec![
+                    ipv4_u32(ipv4.address),
+                    u32::from(ipv4.prefix_length),
+                    ipv4.gateway.map(ipv4_u32).unwrap_or(0),
+                ]]
+            })
+            .unwrap_or_default()
     }
 
     #[zbus(property)]
@@ -237,7 +247,9 @@ impl<B: NetworkBackend + Send + Sync + 'static> Ip4ConfigIface<B> {
 
     #[zbus(property)]
     fn route_data(&self) -> Vec<HashMap<String, OwnedValue>> {
-        self.outcome().map(|ipv4| v4_route_data(&ipv4)).unwrap_or_default()
+        self.outcome()
+            .map(|ipv4| v4_route_data(&ipv4))
+            .unwrap_or_default()
     }
 
     #[zbus(property)]
@@ -261,7 +273,9 @@ impl<B: NetworkBackend + Send + Sync + 'static> Ip4ConfigIface<B> {
 
     #[zbus(property)]
     fn searches(&self) -> Vec<String> {
-        self.outcome().map(|ipv4| ipv4.search_domains).unwrap_or_default()
+        self.outcome()
+            .map(|ipv4| ipv4.search_domains)
+            .unwrap_or_default()
     }
 
     #[zbus(property)]
@@ -297,7 +311,9 @@ impl<B: NetworkBackend + Send + Sync + 'static> Ip6ConfigIface<B> {
     }
 
     fn outcome(&self) -> Option<Ipv6Outcome> {
-        self.shared.active_by_id(self.id).and_then(|active| active.outcome.ipv6)
+        self.shared
+            .active_by_id(self.id)
+            .and_then(|active| active.outcome.ipv6)
     }
 
     /// The primary IPv6 address to report: the configured address, or the
@@ -315,13 +331,15 @@ impl<B: NetworkBackend + Send + Sync + 'static> Ip6ConfigIface<B> {
 impl<B: NetworkBackend + Send + Sync + 'static> Ip6ConfigIface<B> {
     #[zbus(property)]
     fn addresses(&self) -> Vec<(Vec<u8>, u32, Vec<u8>)> {
-        self.address().map(|(address, prefix)| {
-            vec![(
-                address.octets().to_vec(),
-                u32::from(prefix),
-                [0u8; 16].to_vec(),
-            )]
-        }).unwrap_or_default()
+        self.address()
+            .map(|(address, prefix)| {
+                vec![(
+                    address.octets().to_vec(),
+                    u32::from(prefix),
+                    [0u8; 16].to_vec(),
+                )]
+            })
+            .unwrap_or_default()
     }
 
     #[zbus(property)]
@@ -357,7 +375,9 @@ impl<B: NetworkBackend + Send + Sync + 'static> Ip6ConfigIface<B> {
 
     #[zbus(property)]
     fn route_data(&self) -> Vec<HashMap<String, OwnedValue>> {
-        self.outcome().map(|ipv6| v6_route_data(&ipv6)).unwrap_or_default()
+        self.outcome()
+            .map(|ipv6| v6_route_data(&ipv6))
+            .unwrap_or_default()
     }
 
     #[zbus(property)]
@@ -374,7 +394,9 @@ impl<B: NetworkBackend + Send + Sync + 'static> Ip6ConfigIface<B> {
 
     #[zbus(property)]
     fn searches(&self) -> Vec<String> {
-        self.outcome().map(|ipv6| ipv6.search_domains).unwrap_or_default()
+        self.outcome()
+            .map(|ipv6| ipv6.search_domains)
+            .unwrap_or_default()
     }
 
     #[zbus(property)]
@@ -433,8 +455,14 @@ impl<B: NetworkBackend + Send + Sync + 'static> Dhcp4ConfigIface<B> {
         };
         let mut options = HashMap::new();
         options.insert("ip_address".to_string(), val_str(ipv4.address.to_string()));
-        options.insert("ip_prefix".to_string(), val_u32(u32::from(ipv4.prefix_length)));
-        options.insert("subnet_mask".to_string(), val_str(subnet_mask(ipv4.prefix_length).to_string()));
+        options.insert(
+            "ip_prefix".to_string(),
+            val_u32(u32::from(ipv4.prefix_length)),
+        );
+        options.insert(
+            "subnet_mask".to_string(),
+            val_str(subnet_mask(ipv4.prefix_length).to_string()),
+        );
         if let Some(gateway) = ipv4.gateway {
             options.insert("routers".to_string(), val_str(gateway.to_string()));
         }
@@ -447,17 +475,20 @@ impl<B: NetworkBackend + Send + Sync + 'static> Dhcp4ConfigIface<B> {
             })
             .collect();
         if !v4_dns.is_empty() {
-            options.insert(
-                "domain_name_servers".to_string(),
-                val_str(v4_dns.join(",")),
-            );
+            options.insert("domain_name_servers".to_string(), val_str(v4_dns.join(",")));
         }
         if let Some(lease) = ipv4.lease {
             if let Some(server) = lease.server_identifier {
-                options.insert("dhcp_server_identifier".to_string(), val_str(server.to_string()));
+                options.insert(
+                    "dhcp_server_identifier".to_string(),
+                    val_str(server.to_string()),
+                );
             }
             if let Some(lease_seconds) = lease.lease_seconds {
-                options.insert("dhcp_lease_time".to_string(), val_str(lease_seconds.to_string()));
+                options.insert(
+                    "dhcp_lease_time".to_string(),
+                    val_str(lease_seconds.to_string()),
+                );
                 let expiry = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|now| now.as_secs() + u64::from(lease_seconds))
@@ -481,7 +512,10 @@ pub struct Dhcp6ConfigIface<B> {
 
 impl<B> Dhcp6ConfigIface<B> {
     pub fn new(shared: Arc<Shared<B>>, id: ActiveConnectionId) -> Self {
-        Self { _shared: shared, _id: id }
+        Self {
+            _shared: shared,
+            _id: id,
+        }
     }
 }
 

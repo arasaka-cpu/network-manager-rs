@@ -61,7 +61,10 @@ pub fn run() {
     assert_eq!(lease.gateway, Some(SERVER_IP));
     assert_eq!(lease.dns_servers, vec![SERVER_IP]);
     assert_eq!(lease.search_domains, vec!["nmd.test".to_string()]);
-    assert!(!kernel_has_lease(client_index), "negotiation alone must not touch the kernel");
+    assert!(
+        !kernel_has_lease(client_index),
+        "negotiation alone must not touch the kernel"
+    );
 
     // Phase 2: the IP engine activates the connection, applying the lease.
     let mut engine = LinuxIpEngine::new();
@@ -78,14 +81,19 @@ pub fn run() {
         )
         .expect("IP engine auto activation must succeed");
 
-    let ipv4 = outcome.ipv4.expect("automatic activation produces ipv4 outcome");
+    let ipv4 = outcome
+        .ipv4
+        .expect("automatic activation produces ipv4 outcome");
     assert_eq!(ipv4.address, LEASE_IP);
     assert_eq!(ipv4.prefix_length, PREFIX_LENGTH);
     assert_eq!(ipv4.gateway, Some(SERVER_IP));
     assert_eq!(ipv4.source, Ipv4Source::AutomaticDhcp);
     assert_eq!(ipv4.dns_servers, vec![IpAddr::V4(SERVER_IP)]);
     assert!(state.ipv4.is_some());
-    assert!(state.dns_owner.is_some(), "engine must own the resolv.conf it wrote");
+    assert!(
+        state.dns_owner.is_some(),
+        "engine must own the resolv.conf it wrote"
+    );
     verify_kernel_state(client_index, true);
 
     // Phase 3: teardown removes the address, the route and the DNS file.

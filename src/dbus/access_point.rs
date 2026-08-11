@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zbus::zvariant::OwnedValue;
 use zbus::interface;
+use zbus::zvariant::OwnedValue;
 
 use crate::daemon::NetworkBackend;
 use crate::linux::model::{AccessPoint, frequency_to_channel};
@@ -16,9 +16,8 @@ use crate::linux::model::{AccessPoint, frequency_to_channel};
 use super::error::FacadeError;
 use super::shared::Shared;
 use super::{
-    NM_802_11_AP_SEC_KEY_MGMT_802_1X, NM_802_11_AP_SEC_KEY_MGMT_OWE,
-    NM_802_11_AP_SEC_KEY_MGMT_PSK, NM_802_11_AP_SEC_KEY_MGMT_SAE, NM_ACCESS_POINT_FLAGS_NONE,
-    NM_ACCESS_POINT_FLAGS_PRIVACY,
+    NM_802_11_AP_SEC_KEY_MGMT_802_1X, NM_802_11_AP_SEC_KEY_MGMT_OWE, NM_802_11_AP_SEC_KEY_MGMT_PSK,
+    NM_802_11_AP_SEC_KEY_MGMT_SAE, NM_ACCESS_POINT_FLAGS_NONE, NM_ACCESS_POINT_FLAGS_PRIVACY,
 };
 
 /// Maps a dBm signal reading to NetworkManager's 0-100 strength percentage.
@@ -68,13 +67,13 @@ impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
 impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
     #[zbus(property)]
     fn flags(&self) -> Result<u32, zbus::fdo::Error> {
-        let ap = self
-            .ap()
-            .ok_or_else(|| FacadeError::UnknownDevice(format!("access point {}", crate::linux::model::format_mac_address(&self.bssid))))?;
-        let privacy = ap.security.wep
-            || ap.security.wpa1
-            || ap.security.wpa2
-            || ap.security.wpa3;
+        let ap = self.ap().ok_or_else(|| {
+            FacadeError::UnknownDevice(format!(
+                "access point {}",
+                crate::linux::model::format_mac_address(&self.bssid)
+            ))
+        })?;
+        let privacy = ap.security.wep || ap.security.wpa1 || ap.security.wpa2 || ap.security.wpa3;
         Ok(if privacy {
             NM_ACCESS_POINT_FLAGS_PRIVACY
         } else {
@@ -85,14 +84,20 @@ impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
     #[zbus(property)]
     fn wpa_flags(&self) -> Result<u32, zbus::fdo::Error> {
         Ok(security_flags(&self.ap().ok_or_else(|| {
-            FacadeError::UnknownDevice(format!("access point {}", crate::linux::model::format_mac_address(&self.bssid)))
+            FacadeError::UnknownDevice(format!(
+                "access point {}",
+                crate::linux::model::format_mac_address(&self.bssid)
+            ))
         })?))
     }
 
     #[zbus(property)]
     fn rsn_flags(&self) -> Result<u32, zbus::fdo::Error> {
         Ok(security_flags(&self.ap().ok_or_else(|| {
-            FacadeError::UnknownDevice(format!("access point {}", crate::linux::model::format_mac_address(&self.bssid)))
+            FacadeError::UnknownDevice(format!(
+                "access point {}",
+                crate::linux::model::format_mac_address(&self.bssid)
+            ))
         })?))
     }
 
@@ -100,7 +105,12 @@ impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
     fn ssid(&self) -> Result<Vec<u8>, zbus::fdo::Error> {
         Ok(self
             .ap()
-            .ok_or_else(|| FacadeError::UnknownDevice(format!("access point {}", crate::linux::model::format_mac_address(&self.bssid))))?
+            .ok_or_else(|| {
+                FacadeError::UnknownDevice(format!(
+                    "access point {}",
+                    crate::linux::model::format_mac_address(&self.bssid)
+                ))
+            })?
             .ssid
             .map(|ssid| ssid.as_bytes().to_vec())
             .unwrap_or_default())
@@ -110,7 +120,12 @@ impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
     fn frequency(&self) -> Result<u32, zbus::fdo::Error> {
         Ok(self
             .ap()
-            .ok_or_else(|| FacadeError::UnknownDevice(format!("access point {}", crate::linux::model::format_mac_address(&self.bssid))))?
+            .ok_or_else(|| {
+                FacadeError::UnknownDevice(format!(
+                    "access point {}",
+                    crate::linux::model::format_mac_address(&self.bssid)
+                ))
+            })?
             .frequency
             .unwrap_or(0))
     }
@@ -118,9 +133,13 @@ impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
     #[zbus(property)]
     fn channel(&self) -> Result<u32, zbus::fdo::Error> {
         let ap = self.ap().ok_or_else(|| {
-            FacadeError::UnknownDevice(format!("access point {}", crate::linux::model::format_mac_address(&self.bssid)))
+            FacadeError::UnknownDevice(format!(
+                "access point {}",
+                crate::linux::model::format_mac_address(&self.bssid)
+            ))
         })?;
-        Ok(ap.channel
+        Ok(ap
+            .channel
             .map(u32::from)
             .or_else(|| {
                 ap.frequency
@@ -153,7 +172,12 @@ impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
     fn strength(&self) -> Result<u8, zbus::fdo::Error> {
         Ok(strength_pct(
             self.ap()
-                .ok_or_else(|| FacadeError::UnknownDevice(format!("access point {}", crate::linux::model::format_mac_address(&self.bssid))))?
+                .ok_or_else(|| {
+                    FacadeError::UnknownDevice(format!(
+                        "access point {}",
+                        crate::linux::model::format_mac_address(&self.bssid)
+                    ))
+                })?
                 .signal_dbm,
         ))
     }
@@ -162,7 +186,12 @@ impl<B: NetworkBackend + Send + Sync + 'static> AccessPointIface<B> {
     fn last_seen(&self) -> Result<i32, zbus::fdo::Error> {
         Ok(self
             .ap()
-            .ok_or_else(|| FacadeError::UnknownDevice(format!("access point {}", crate::linux::model::format_mac_address(&self.bssid))))?
+            .ok_or_else(|| {
+                FacadeError::UnknownDevice(format!(
+                    "access point {}",
+                    crate::linux::model::format_mac_address(&self.bssid)
+                ))
+            })?
             .seen_millis_ago
             .map(|millis| (millis / 1000) as i32)
             .unwrap_or(0))

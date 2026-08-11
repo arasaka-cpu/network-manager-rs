@@ -402,7 +402,11 @@ mod tests {
         assert!(matches!(err, ActivationError::Engine(_)));
         assert!(!err.to_string().contains(PASSPHRASE));
         assert!(engine.active_network.is_none());
-        assert_eq!(data.lock().unwrap().removed.len(), 1, "failed network is removed");
+        assert_eq!(
+            data.lock().unwrap().removed.len(),
+            1,
+            "failed network is removed"
+        );
     }
 
     #[test]

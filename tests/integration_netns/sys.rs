@@ -129,7 +129,13 @@ pub fn mount_fresh_proc_and_sysfs() -> io::Result<()> {
     // mount point inside our private namespace, data is NULL. On failure the
     // caller aborts the test.
     let rc = unsafe {
-        mount(c"proc".as_ptr(), c"/proc".as_ptr(), c"proc".as_ptr(), 0, std::ptr::null())
+        mount(
+            c"proc".as_ptr(),
+            c"/proc".as_ptr(),
+            c"proc".as_ptr(),
+            0,
+            std::ptr::null(),
+        )
     };
     if rc < 0 {
         return Err(io::Error::last_os_error());
@@ -137,7 +143,13 @@ pub fn mount_fresh_proc_and_sysfs() -> io::Result<()> {
     // SAFETY: source/fstype are NUL-terminated literals, target "/sys" is a
     // mount point inside our private namespace, data is NULL.
     let rc = unsafe {
-        mount(c"sysfs".as_ptr(), c"/sys".as_ptr(), c"sysfs".as_ptr(), 0, std::ptr::null())
+        mount(
+            c"sysfs".as_ptr(),
+            c"/sys".as_ptr(),
+            c"sysfs".as_ptr(),
+            0,
+            std::ptr::null(),
+        )
     };
     if rc < 0 {
         return Err(io::Error::last_os_error());
@@ -150,7 +162,10 @@ pub fn mount_fresh_proc_and_sysfs() -> io::Result<()> {
 /// The unaddressed DHCP client would otherwise drop the server's broadcast
 /// OFFER because reverse-path lookup of its source address fails.
 pub fn disable_rp_filter(ifname: &str) -> io::Result<()> {
-    std::fs::write(format!("/proc/sys/net/ipv4/conf/{ifname}/rp_filter"), b"0\n")
+    std::fs::write(
+        format!("/proc/sys/net/ipv4/conf/{ifname}/rp_filter"),
+        b"0\n",
+    )
 }
 
 fn push_struct<T>(buf: &mut Vec<u8>, value: &T) {
@@ -286,7 +301,11 @@ pub fn create_veth_pair(peer_a: &str, peer_b: &str) -> io::Result<()> {
     push_attr(&mut payload, IFLA_IFNAME, &c_string(peer_a));
     push_attr(&mut payload, IFLA_LINKINFO, &link_info);
 
-    let message = build_netlink_message(RTM_NEWLINK, NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK, &payload);
+    let message = build_netlink_message(
+        RTM_NEWLINK,
+        NLM_F_REQUEST | NLM_F_CREATE | NLM_F_EXCL | NLM_F_ACK,
+        &payload,
+    );
     transact_rtnetlink(&message)
 }
 

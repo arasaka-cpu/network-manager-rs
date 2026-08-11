@@ -9,17 +9,19 @@ use network_manager_rs::linux::ipconfig::LinuxIpConfigurator;
 use network_manager_rs::linux::netlink::{get_addresses, get_links, get_routes};
 
 fn main() {
-    let name = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| {
-            eprintln!("usage: nmd_ipconfig_probe <ifname>");
-            std::process::exit(2);
-        });
+    let name = std::env::args().nth(1).unwrap_or_else(|| {
+        eprintln!("usage: nmd_ipconfig_probe <ifname>");
+        std::process::exit(2);
+    });
     let links = get_links().unwrap_or_else(|err| {
         eprintln!("get_links failed: {err}");
         std::process::exit(1);
     });
-    let Some(index) = links.iter().find(|link| link.name == name).map(|link| link.index) else {
+    let Some(index) = links
+        .iter()
+        .find(|link| link.name == name)
+        .map(|link| link.index)
+    else {
         eprintln!("interface {name} not found");
         std::process::exit(1);
     };
@@ -60,8 +62,7 @@ fn main() {
     }
     let addresses = get_addresses().unwrap();
     let still_address = addresses.iter().any(|address| {
-        address.interface_index == index as u32
-            && address.address.to_string() == "10.99.0.51"
+        address.interface_index == index as u32 && address.address.to_string() == "10.99.0.51"
     });
     let routes = get_routes().unwrap();
     let still_route = routes.iter().any(|route| {

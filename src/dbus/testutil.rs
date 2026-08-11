@@ -20,9 +20,9 @@ use crate::connection::ip::ActivationOutcome;
 use crate::connection::profile::ConnectionProfile;
 use crate::daemon::{Daemon, NetworkBackend};
 use crate::linux::model::{
-    AccessPoint, AccessPointSecurity, Address, Bssid, InterfaceType, Link, LinkFlags,
-    NetlinkError, NetworkEvent, NetworkEventSource, Route, Ssid, WifiBand, WifiBandId,
-    WifiCapabilities, WifiCipher, WirelessInterface,
+    AccessPoint, AccessPointSecurity, Address, Bssid, InterfaceType, Link, LinkFlags, NetlinkError,
+    NetworkEvent, NetworkEventSource, Route, Ssid, WifiBand, WifiBandId, WifiCapabilities,
+    WifiCipher, WirelessInterface,
 };
 
 struct EmptyEventSource;
@@ -201,7 +201,9 @@ impl TestServer {
                 .build()
         });
         let client_conn = ConnectionBuilder::unix_stream(client_side).p2p().build()?;
-        let server_conn = server_handle.join().expect("server connection thread panics")?;
+        let server_conn = server_handle
+            .join()
+            .expect("server connection thread panics")?;
         let server = super::Server::attach(daemon, server_conn)?;
         Ok(Self {
             server,

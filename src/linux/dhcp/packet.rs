@@ -105,7 +105,14 @@ fn as_ipv4(bytes: &[u8]) -> Ipv4Addr {
     Ipv4Addr::new(bytes[0], bytes[1], bytes[2], bytes[3])
 }
 
-fn base_packet(op: u8, xid: u32, flags: u16, ciaddr: Ipv4Addr, yiaddr: Ipv4Addr, mac: [u8; 6]) -> DhcpPacket {
+fn base_packet(
+    op: u8,
+    xid: u32,
+    flags: u16,
+    ciaddr: Ipv4Addr,
+    yiaddr: Ipv4Addr,
+    mac: [u8; 6],
+) -> DhcpPacket {
     let mut chaddr = [0_u8; 16];
     chaddr[..6].copy_from_slice(&mac);
     let mut packet = DhcpPacket {
@@ -141,10 +148,7 @@ pub fn build_options(entries: Vec<(u8, Vec<u8>)>) -> Vec<u8> {
     bytes
 }
 
-fn serialize_with_options(
-    packet: &DhcpPacket,
-    extra_options: &[(u8, Vec<u8>)],
-) -> Vec<u8> {
+fn serialize_with_options(packet: &DhcpPacket, extra_options: &[(u8, Vec<u8>)]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(OPTIONS_OFFSET + 64);
     bytes.push(packet.op);
     bytes.push(HTYPE_ETHERNET);
@@ -175,7 +179,9 @@ pub fn serialize(packet: &DhcpPacket) -> Vec<u8> {
 /// Parses a raw UDP payload into a [`DhcpPacket`], validating the magic cookie.
 pub fn parse(bytes: &[u8]) -> Result<DhcpPacket, DhcpError> {
     if bytes.len() < OPTIONS_OFFSET {
-        return Err(DhcpError::MalformedPacket("packet shorter than fixed header"));
+        return Err(DhcpError::MalformedPacket(
+            "packet shorter than fixed header",
+        ));
     }
     if bytes[OPTIONS_OFFSET - 4..OPTIONS_OFFSET] != MAGIC_COOKIE {
         return Err(DhcpError::MalformedPacket("missing DHCP magic cookie"));
@@ -253,7 +259,14 @@ impl DhcpPacket {
         if let Some(address) = requested_address {
             options.push((OPTION_REQUESTED_IP, address.octets().to_vec()));
         }
-        let packet = base_packet(OP_BOOTREQUEST, xid, 0x8000, Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, mac);
+        let packet = base_packet(
+            OP_BOOTREQUEST,
+            xid,
+            0x8000,
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::UNSPECIFIED,
+            mac,
+        );
         serialize_with_options(&packet, &options)
     }
 
@@ -275,7 +288,14 @@ impl DhcpPacket {
         if let Some(hostname) = hostname {
             options.push((OPTION_HOSTNAME, hostname.as_bytes().to_vec()));
         }
-        let packet = base_packet(OP_BOOTREQUEST, xid, 0x8000, Ipv4Addr::UNSPECIFIED, Ipv4Addr::UNSPECIFIED, mac);
+        let packet = base_packet(
+            OP_BOOTREQUEST,
+            xid,
+            0x8000,
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::UNSPECIFIED,
+            mac,
+        );
         serialize_with_options(&packet, &options)
     }
 
@@ -316,7 +336,10 @@ impl DhcpPacket {
     }
 
     pub fn get_option(&self, code: u8) -> Option<&[u8]> {
-        self.options.iter().find(|(c, _)| *c == code).map(|(_, value)| value.as_slice())
+        self.options
+            .iter()
+            .find(|(c, _)| *c == code)
+            .map(|(_, value)| value.as_slice())
     }
 
     pub fn hardware_address(&self) -> [u8; 6] {
@@ -360,7 +383,10 @@ impl DhcpPacket {
 
     fn string_option(&self, code: u8) -> Option<String> {
         self.get_option(code).map(|bytes| {
-            let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(bytes.len());
             String::from_utf8_lossy(&bytes[..end]).trim().to_string()
         })
     }
@@ -408,7 +434,9 @@ impl DhcpPacket {
             .yiaddr()
             .ok_or(DhcpError::MalformedPacket("DHCPACK carried no address"))?;
         if self.hardware_address() != mac {
-            return Err(DhcpError::MalformedPacket("DHCPACK addressed to another client"));
+            return Err(DhcpError::MalformedPacket(
+                "DHCPACK addressed to another client",
+            ));
         }
         let netmask = self.subnet_mask().unwrap_or_else(|| {
             // RFC 2132 §3.3: when the mask is missing, use the classful default.
@@ -445,9 +473,10 @@ impl DhcpPacket {
 
 /// Counts the leading set bits of an IPv4 netmask (its prefix length).
 pub fn prefix_length_from_netmask(netmask: Ipv4Addr) -> u8 {
-    netmask.octets().iter().fold(0_u8, |count, byte| {
-        count + byte.leading_ones() as u8
-    })
+    netmask
+        .octets()
+        .iter()
+        .fold(0_u8, |count, byte| count + byte.leading_ones() as u8)
 }
 
 #[cfg(test)]
@@ -456,8 +485,14 @@ mod tests {
 
     #[test]
     fn prefix_length_from_common_netmasks() {
-        assert_eq!(prefix_length_from_netmask(Ipv4Addr::new(255, 255, 255, 0)), 24);
-        assert_eq!(prefix_length_from_netmask(Ipv4Addr::new(255, 255, 0, 0)), 16);
+        assert_eq!(
+            prefix_length_from_netmask(Ipv4Addr::new(255, 255, 255, 0)),
+            24
+        );
+        assert_eq!(
+            prefix_length_from_netmask(Ipv4Addr::new(255, 255, 0, 0)),
+            16
+        );
         assert_eq!(prefix_length_from_netmask(Ipv4Addr::new(255, 0, 0, 0)), 8);
         assert_eq!(prefix_length_from_netmask(Ipv4Addr::new(0, 0, 0, 0)), 0);
     }
@@ -486,7 +521,10 @@ mod tests {
         assert_eq!(parsed.xid, 0xdead_beef);
         assert_eq!(parsed.flags, 0x8000);
         assert_eq!(parsed.ciaddr(), Some(Ipv4Addr::new(192, 168, 1, 50)));
-        assert_eq!(parsed.hardware_address(), [0x02, 0x00, 0x00, 0x00, 0x00, 0x0a]);
+        assert_eq!(
+            parsed.hardware_address(),
+            [0x02, 0x00, 0x00, 0x00, 0x00, 0x0a]
+        );
         assert_eq!(parsed.message_type(), DhcpMessageType::Discover);
     }
 }

@@ -11,10 +11,10 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use crate::connection::ip::{IpConfigError, IpConfigurator, Ipv4Config, Ipv6Config};
 use crate::linux::model::{IpFamily, Route, RouteKind, RouteScope};
 use crate::linux::netlink::{
-    build_netlink_message, ifaddr_payload, rtmsg_payload, transact_rtnetlink, AF_INET, AF_INET6,
-    IFA_ADDRESS, IFA_LOCAL, NLM_F_ACK, NLM_F_CREATE, NLM_F_EXCL, NLM_F_REPLACE, NLM_F_REQUEST,
-    RTA_DST, RTA_GATEWAY, RTA_OIF, RTA_PRIORITY, RT_SCOPE_LINK, RT_TABLE_MAIN, RTM_DELADDR,
-    RTM_DELROUTE, RTM_NEWADDR, RTM_NEWROUTE, RTN_UNICAST,
+    AF_INET, AF_INET6, IFA_ADDRESS, IFA_LOCAL, NLM_F_ACK, NLM_F_CREATE, NLM_F_EXCL, NLM_F_REPLACE,
+    NLM_F_REQUEST, RT_SCOPE_LINK, RT_TABLE_MAIN, RTA_DST, RTA_GATEWAY, RTA_OIF, RTA_PRIORITY,
+    RTM_DELADDR, RTM_DELROUTE, RTM_NEWADDR, RTM_NEWROUTE, RTN_UNICAST, build_netlink_message,
+    ifaddr_payload, rtmsg_payload, transact_rtnetlink,
 };
 
 /// Configures IPv4/IPv6 addresses and routes through rtnetlink.
@@ -40,7 +40,10 @@ impl LinuxIpConfigurator {
                 family,
                 prefix_length,
                 interface_index,
-                &[(IFA_LOCAL, address.to_vec()), (IFA_ADDRESS, address.to_vec())],
+                &[
+                    (IFA_LOCAL, address.to_vec()),
+                    (IFA_ADDRESS, address.to_vec()),
+                ],
             ),
         );
         transact_rtnetlink(&message).map_err(Into::into)
@@ -60,7 +63,10 @@ impl LinuxIpConfigurator {
                 family,
                 prefix_length,
                 interface_index,
-                &[(IFA_LOCAL, address.to_vec()), (IFA_ADDRESS, address.to_vec())],
+                &[
+                    (IFA_LOCAL, address.to_vec()),
+                    (IFA_ADDRESS, address.to_vec()),
+                ],
             ),
         );
         transact_rtnetlink(&message).map_err(Into::into)
@@ -103,7 +109,10 @@ fn build_route_message(message_type: u16, flags: u16, route: &Route) -> Vec<u8> 
     if let Some(gateway) = route.gateway {
         attrs.push((RTA_GATEWAY, ip_bytes(gateway)));
     }
-    attrs.push((RTA_OIF, route.output_interface.unwrap_or(0).to_ne_bytes().to_vec()));
+    attrs.push((
+        RTA_OIF,
+        route.output_interface.unwrap_or(0).to_ne_bytes().to_vec(),
+    ));
     if let Some(metric) = route.metric {
         attrs.push((RTA_PRIORITY, metric.to_ne_bytes().to_vec()));
     }
@@ -128,7 +137,9 @@ impl IpConfigurator for LinuxIpConfigurator {
         config: &Ipv4Config,
     ) -> Result<(), IpConfigError> {
         if config.prefix_length > 32 {
-            return Err(IpConfigError::InvalidConfig("ipv4 prefix length exceeds 32"));
+            return Err(IpConfigError::InvalidConfig(
+                "ipv4 prefix length exceeds 32",
+            ));
         }
         self.add_address(
             AF_INET,
@@ -182,7 +193,9 @@ impl IpConfigurator for LinuxIpConfigurator {
         config: &Ipv6Config,
     ) -> Result<(), IpConfigError> {
         if config.prefix_length > 128 {
-            return Err(IpConfigError::InvalidConfig("ipv6 prefix length exceeds 128"));
+            return Err(IpConfigError::InvalidConfig(
+                "ipv6 prefix length exceeds 128",
+            ));
         }
         self.add_address(
             AF_INET6,
@@ -299,7 +312,9 @@ mod tests {
     fn route_message_includes_destination_for_non_default_routes() {
         let route = Route {
             family: IpFamily::V6,
-            destination: IpAddr::V6(Ipv6Addr::from([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])),
+            destination: IpAddr::V6(Ipv6Addr::from([
+                0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ])),
             prefix_length: 48,
             gateway: None,
             output_interface: Some(7),

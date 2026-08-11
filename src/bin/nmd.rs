@@ -110,8 +110,14 @@ fn print_routes() -> Result<(), Box<dyn std::error::Error>> {
             route.destination,
             route.prefix_length,
             gateway,
-            route.output_interface.map(|oif| oif.to_string()).unwrap_or_else(|| "-".to_string()),
-            route.metric.map(|metric| metric.to_string()).unwrap_or_else(|| "-".to_string()),
+            route
+                .output_interface
+                .map(|oif| oif.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            route
+                .metric
+                .map(|metric| metric.to_string())
+                .unwrap_or_else(|| "-".to_string()),
             route.kind,
             route.scope
         );

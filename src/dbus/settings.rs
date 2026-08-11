@@ -8,16 +8,16 @@
 
 use std::sync::Arc;
 
+use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedObjectPath;
-use zbus::interface;
 
 use crate::daemon::NetworkBackend;
 
 use super::convert::{SettingsDict, profile_to_settings, settings_to_profile, stable_uuid};
 use super::error::FacadeError;
-use super::shared::Shared;
 use super::settings_connection_path;
+use super::shared::Shared;
 
 /// The `org.freedesktop.NetworkManager.Settings` interface.
 pub struct SettingsIface<B> {
@@ -87,9 +87,11 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
     ) -> Result<OwnedObjectPath, FacadeError> {
         let profile = settings_to_profile(&settings)?;
         self.shared.daemon_mut().create_profile(profile.clone())?;
-        self.shared.register_connection_object(&profile).map_err(|error| {
-            FacadeError::Internal(format!("failed to register connection object: {error}"))
-        })?;
+        self.shared
+            .register_connection_object(&profile)
+            .map_err(|error| {
+                FacadeError::Internal(format!("failed to register connection object: {error}"))
+            })?;
         let path = settings_connection_path(&stable_uuid(&profile.id));
         super::emit(Self::new_connection(
             &emitter,
@@ -108,9 +110,11 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
         // client compatibility but behaves identically to a saved connection.
         let profile = settings_to_profile(&settings)?;
         self.shared.daemon_mut().create_profile(profile.clone())?;
-        self.shared.register_connection_object(&profile).map_err(|error| {
-            FacadeError::Internal(format!("failed to register connection object: {error}"))
-        })?;
+        self.shared
+            .register_connection_object(&profile)
+            .map_err(|error| {
+                FacadeError::Internal(format!("failed to register connection object: {error}"))
+            })?;
         let path = settings_connection_path(&stable_uuid(&profile.id));
         OwnedObjectPath::try_from(path).map_err(|error| FacadeError::Internal(error.to_string()))
     }
@@ -130,9 +134,11 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
     > {
         let profile = settings_to_profile(&settings)?;
         self.shared.daemon_mut().create_profile(profile.clone())?;
-        self.shared.register_connection_object(&profile).map_err(|error| {
-            FacadeError::Internal(format!("failed to register connection object: {error}"))
-        })?;
+        self.shared
+            .register_connection_object(&profile)
+            .map_err(|error| {
+                FacadeError::Internal(format!("failed to register connection object: {error}"))
+            })?;
         let path = settings_connection_path(&stable_uuid(&profile.id));
         super::emit(Self::new_connection(
             &emitter,
@@ -140,7 +146,8 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
                 .map_err(|e| FacadeError::Internal(e.to_string()))?,
         ))?;
         Ok((
-            OwnedObjectPath::try_from(path).map_err(|error| FacadeError::Internal(error.to_string()))?,
+            OwnedObjectPath::try_from(path)
+                .map_err(|error| FacadeError::Internal(error.to_string()))?,
             std::collections::HashMap::new(),
         ))
     }
@@ -236,10 +243,11 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsConnectionIface<B> {
         self.update(emitter, settings)
     }
 
-    fn delete(&self, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), FacadeError> {
-        self.shared
-            .daemon_mut()
-            .delete_profile(&self.profile_id)?;
+    fn delete(
+        &self,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<(), FacadeError> {
+        self.shared.daemon_mut().delete_profile(&self.profile_id)?;
         super::emit(Self::removed(&emitter))?;
         self.shared.unregister_connection(&self.profile_id)
     }
@@ -248,10 +256,7 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsConnectionIface<B> {
         super::NM_SETTING_CONNECTION_FLAG_NONE
     }
 
-    fn get_applied_connection(
-        &self,
-        _flags: u32,
-    ) -> Result<(SettingsDict, u64), FacadeError> {
+    fn get_applied_connection(&self, _flags: u32) -> Result<(SettingsDict, u64), FacadeError> {
         Ok((profile_to_settings(&self.profile()?), 0))
     }
 

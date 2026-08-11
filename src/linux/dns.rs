@@ -193,7 +193,10 @@ mod tests {
         let mut manager = LinuxDnsManager::new(path.clone());
         let err = manager.apply("profile-b", &config()).unwrap_err();
         assert!(matches!(err, DnsError::ForeignManaged { .. }));
-        assert_eq!(fs::read_to_string(&path).unwrap(), "nameserver 127.0.0.53\n");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "nameserver 127.0.0.53\n"
+        );
     }
 
     #[test]

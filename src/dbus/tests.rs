@@ -10,19 +10,23 @@ use super::testutil::{FakeBackend, TestServer, ethernet_link, wifi_interface};
 
 #[test]
 fn p2p_probe_root_devices_property() {
-    let backend = FakeBackend::default()
-        .with_wifi(wifi_interface(2, "wlan0", [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
+    let backend = FakeBackend::default().with_wifi(wifi_interface(
+        2,
+        "wlan0",
+        [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+    ));
     let server = TestServer::start(Daemon::new(backend)).expect("server starts");
 
-    let proxy = server.proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager").unwrap();
-    let devices: Vec<zbus::zvariant::OwnedObjectPath> =
-        proxy.get_property("Devices").unwrap();
+    let proxy = server
+        .proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager")
+        .unwrap();
+    let devices: Vec<zbus::zvariant::OwnedObjectPath> = proxy.get_property("Devices").unwrap();
     assert_eq!(
         devices,
-        vec![zbus::zvariant::OwnedObjectPath::try_from(
-            "/org/freedesktop/NetworkManager/Devices/2"
-        )
-        .unwrap()]
+        vec![
+            zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/2")
+                .unwrap()
+        ]
     );
 }
 
@@ -32,8 +36,11 @@ fn p2p_probe_root_devices_property() {
 /// which held the daemon mutex while re-acquiring it via `view()`.
 #[test]
 fn p2p_probe_device_property_read_completes() {
-    let backend = FakeBackend::default()
-        .with_wifi(wifi_interface(2, "wlan0", [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
+    let backend = FakeBackend::default().with_wifi(wifi_interface(
+        2,
+        "wlan0",
+        [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+    ));
     let server = TestServer::start(Daemon::new(backend)).expect("server starts");
 
     let proxy = server
@@ -48,21 +55,29 @@ fn p2p_probe_device_property_read_completes() {
         tx.send(state).ok();
     });
     match rx.recv_timeout(std::time::Duration::from_secs(10)) {
-        Ok(state) => assert_eq!(state, 30, "an up device with no active connection is disconnected"),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
-            "device property read did not complete within 10s (daemon mutex self-deadlock?)"
+        Ok(state) => assert_eq!(
+            state, 30,
+            "an up device with no active connection is disconnected"
         ),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            panic!("device property read did not complete within 10s (daemon mutex self-deadlock?)")
+        }
         Err(_) => panic!("device property read failed"),
     }
 }
 
 #[test]
 fn p2p_probe_introspection_reports_interfaces() {
-    let backend = FakeBackend::default()
-        .with_wifi(wifi_interface(2, "wlan0", [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
+    let backend = FakeBackend::default().with_wifi(wifi_interface(
+        2,
+        "wlan0",
+        [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+    ));
     let server = TestServer::start(Daemon::new(backend)).expect("server starts");
 
-    let proxy = server.proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager").unwrap();
+    let proxy = server
+        .proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager")
+        .unwrap();
     let xml = proxy.introspect().unwrap();
     assert!(
         xml.contains("org.freedesktop.NetworkManager"),
@@ -74,13 +89,21 @@ fn p2p_probe_introspection_reports_interfaces() {
 fn p2p_probe_ethernet_devices_are_enumerated() {
     let backend = FakeBackend::default()
         .with_link(ethernet_link(3, "eth0", true))
-        .with_wifi(wifi_interface(2, "wlan0", [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]));
+        .with_wifi(wifi_interface(
+            2,
+            "wlan0",
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+        ));
     let server = TestServer::start(Daemon::new(backend)).expect("server starts");
 
-    let proxy = server.proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager").unwrap();
-    let devices: Vec<zbus::zvariant::OwnedObjectPath> =
-        proxy.get_property("Devices").unwrap();
-    let paths: Vec<String> = devices.iter().map(|path| path.as_str().to_string()).collect();
+    let proxy = server
+        .proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager")
+        .unwrap();
+    let devices: Vec<zbus::zvariant::OwnedObjectPath> = proxy.get_property("Devices").unwrap();
+    let paths: Vec<String> = devices
+        .iter()
+        .map(|path| path.as_str().to_string())
+        .collect();
     assert_eq!(
         paths,
         vec![
@@ -101,7 +124,11 @@ fn has_property(xml: &str, name: &str, ty: &str) -> bool {
 fn p2p_probe_wire_signatures_match_networkmanager() {
     let backend = FakeBackend::default()
         .with_link(ethernet_link(3, "eth0", true))
-        .with_wifi(wifi_interface(2, "wlan0", [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]))
+        .with_wifi(wifi_interface(
+            2,
+            "wlan0",
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+        ))
         .with_access_point(super::testutil::access_point(
             [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01],
             "test-net",
@@ -163,7 +190,10 @@ fn p2p_probe_wire_signatures_match_networkmanager() {
     assert!(has_property(&ap_xml, "LastSeen", "i"));
 
     let settings_xml = server
-        .proxy(super::SETTINGS_PATH, "org.freedesktop.NetworkManager.Settings")
+        .proxy(
+            super::SETTINGS_PATH,
+            "org.freedesktop.NetworkManager.Settings",
+        )
         .unwrap()
         .introspect()
         .unwrap();

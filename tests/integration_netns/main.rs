@@ -30,9 +30,9 @@ mod sys;
 
 use std::io::{BufRead, BufReader};
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
 use std::time::Duration;
 
 use network_manager_rs::connection::ip::{IpConfigurator, Ipv4Config};
@@ -41,8 +41,8 @@ use network_manager_rs::linux::ipconfig::LinuxIpConfigurator;
 
 use dhcp_server::ServerEvent;
 use sys::{
-    bring_link_up, create_veth_pair, disable_rp_filter, enter_private_netns,
-    make_mounts_private, mount_fresh_proc_and_sysfs, mount_tmpfs_over_etc, move_link_to_pid,
+    bring_link_up, create_veth_pair, disable_rp_filter, enter_private_netns, make_mounts_private,
+    mount_fresh_proc_and_sysfs, mount_tmpfs_over_etc, move_link_to_pid,
 };
 
 const CLIENT_IFACE: &str = "nmdc0";
@@ -100,7 +100,9 @@ fn run_integration_test() -> Result<(), Box<dyn std::error::Error>> {
     let stop = Arc::new(AtomicBool::new(false));
     let server_thread = {
         let stop = stop.clone();
-        std::thread::spawn(move || dhcp_server::run(SERVER_IFACE, events_tx, stop, Duration::from_secs(120)))
+        std::thread::spawn(move || {
+            dhcp_server::run(SERVER_IFACE, events_tx, stop, Duration::from_secs(120))
+        })
     };
     match events_rx.recv_timeout(Duration::from_secs(5)) {
         Ok(ServerEvent::Listening) => {}
@@ -159,22 +161,35 @@ fn run_integration_test() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .filter(|event| matches!(event, ServerEvent::Request { .. }))
         .count();
-    assert!(discovers >= 2, "both phases DISCOVER (observed {discovers})");
+    assert!(
+        discovers >= 2,
+        "both phases DISCOVER (observed {discovers})"
+    );
     assert!(requests >= 2, "both phases REQUEST (observed {requests})");
     for event in observed.iter().filter(|event| {
-        matches!(event, ServerEvent::Discover { .. } | ServerEvent::Request { .. })
+        matches!(
+            event,
+            ServerEvent::Discover { .. } | ServerEvent::Request { .. }
+        )
     }) {
         match event {
-            ServerEvent::Discover { xid, mac, requested_addr } => {
+            ServerEvent::Discover {
+                xid,
+                mac,
+                requested_addr,
+            } => {
                 assert_eq!(*mac, expected_mac, "client MAC must identify the lease");
                 assert!(*xid != 0, "transaction id must be nonzero");
                 assert_eq!(
-                    *requested_addr,
-                    None,
+                    *requested_addr, None,
                     "the DISCOVER must not ask for a specific address"
                 );
             }
-            ServerEvent::Request { xid, mac, requested_addr } => {
+            ServerEvent::Request {
+                xid,
+                mac,
+                requested_addr,
+            } => {
                 assert_eq!(*mac, expected_mac, "client MAC must identify the lease");
                 assert!(*xid != 0, "transaction id must be nonzero");
                 assert_eq!(
