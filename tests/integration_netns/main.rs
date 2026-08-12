@@ -26,6 +26,7 @@
 
 mod client;
 mod dhcp_server;
+mod routes;
 mod sys;
 
 use std::io::{BufRead, BufReader};
@@ -201,6 +202,7 @@ fn run_integration_test() -> Result<(), Box<dyn std::error::Error>> {
             _ => unreachable!("filtered above"),
         }
     }
+    routes::run_all()?;
     Ok(())
 }
 

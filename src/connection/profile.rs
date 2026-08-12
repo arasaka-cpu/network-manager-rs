@@ -414,6 +414,11 @@ pub struct IpConfig {
     pub gateway: Option<IpAddr>,
     #[serde(default)]
     pub dns_servers: Vec<IpAddr>,
+    /// Static routes requested by the profile, installed in addition to the
+    /// connected and default routes the engine derives from the address and
+    /// gateway.
+    #[serde(default)]
+    pub routes: Vec<crate::linux::model::Route>,
 }
 
 impl Default for IpConfig {
@@ -424,6 +429,7 @@ impl Default for IpConfig {
             prefix_length: None,
             gateway: None,
             dns_servers: Vec::new(),
+            routes: Vec::new(),
         }
     }
 }
@@ -627,6 +633,7 @@ mod tests {
             prefix_length: Some(24),
             gateway: Some(IpAddr::from([192, 168, 1, 1])),
             dns_servers: vec![IpAddr::from([192, 168, 1, 1])],
+            routes: Vec::new(),
         };
         assert!(profile.validate().is_ok());
     }

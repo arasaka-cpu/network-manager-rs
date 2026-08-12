@@ -34,6 +34,7 @@ const NLM_F_CREATE: u16 = 0x0400;
 const NLM_F_EXCL: u16 = 0x0200;
 const NLMSG_ERROR: u16 = 2;
 const RTM_NEWLINK: u16 = 16;
+const RTM_DELLINK: u16 = 17;
 const IFLA_IFNAME: u16 = 3;
 const IFLA_LINKINFO: u16 = 18;
 const IFLA_INFO_KIND: u16 = 1;
@@ -165,6 +166,30 @@ pub fn disable_rp_filter(ifname: &str) -> io::Result<()> {
     std::fs::write(
         format!("/proc/sys/net/ipv4/conf/{ifname}/rp_filter"),
         b"0\n",
+    )
+}
+
+/// Disables IPv6 duplicate-address detection on `ifname`.
+///
+/// An address that is still `tentative` cannot serve as the gateway for static
+/// routes (the kernel reports the gateway subnet as unreachable until DAD
+/// settles), which would make the IPv6 scenario depend on DAD timing.
+pub fn disable_ipv6_dad(ifname: &str) -> io::Result<()> {
+    std::fs::write(
+        format!("/proc/sys/net/ipv6/conf/{ifname}/dad_transmits"),
+        b"0\n",
+    )
+}
+
+/// Disables IPv6 entirely on `ifname`.
+///
+/// Keeps the IPv4 route scenarios deterministic: without this, bringing the
+/// veth up would auto-assign a `fe80::/64` link-local route that shows up in
+/// the main table dump and breaks "exactly these routes" assertions.
+pub fn disable_ipv6(ifname: &str) -> io::Result<()> {
+    std::fs::write(
+        format!("/proc/sys/net/ipv6/conf/{ifname}/disable_ipv6"),
+        b"1\n",
     )
 }
 
@@ -314,6 +339,27 @@ fn c_string(value: &str) -> Vec<u8> {
     let mut bytes = value.as_bytes().to_vec();
     bytes.push(0);
     bytes
+}
+
+/// Deletes the link `index`, freeing its kernel state.
+///
+/// Used by the route scenarios to leave the harness namespace as clean as it
+/// was found (a removed veth drops its addresses and routes with it).
+pub fn remove_link(index: i32) -> io::Result<()> {
+    let mut payload = Vec::new();
+    push_struct(
+        &mut payload,
+        &IfInfoMsg {
+            ifi_family: 0,
+            __ifi_pad: 0,
+            ifi_type: 0,
+            ifi_index: index,
+            ifi_flags: 0,
+            ifi_change: 0,
+        },
+    );
+    let message = build_netlink_message(RTM_DELLINK, NLM_F_REQUEST | NLM_F_ACK, &payload);
+    transact_rtnetlink(&message)
 }
 
 /// Brings the link `index` up (`IFF_UP`).
