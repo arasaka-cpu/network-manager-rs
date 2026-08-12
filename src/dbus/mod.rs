@@ -29,6 +29,7 @@ use std::sync::Arc;
 use zbus::blocking::Connection;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
+use crate::authorization::{AllowAllAuthorization, Authorization, PolkitAuthorization};
 use crate::daemon::{Daemon, NetworkBackend};
 
 pub use shared::Shared;
@@ -179,22 +180,39 @@ pub struct Server<B> {
 }
 
 impl<B: NetworkBackend + Send + Sync + 'static> Server<B> {
-    /// Connects to the session bus and registers all objects.
+    /// Connects to the session bus and registers all objects, enforcing policy
+    /// against the system polkit authority.
     pub fn serve(daemon: Daemon<B>) -> zbus::Result<Self> {
-        Self::connect(daemon, BUS_NAME)
+        Self::connect(daemon, BUS_NAME, Self::polkit_authorization()?)
     }
 
-    /// Connects to the bus with an explicit well-known name (tests).
+    /// Connects to the bus with an explicit well-known name (tests), enforcing
+    /// policy against the system polkit authority.
     pub fn serve_with_name(daemon: Daemon<B>, name: &str) -> zbus::Result<Self> {
-        Self::connect(daemon, name)
+        Self::connect(daemon, name, Self::polkit_authorization()?)
     }
 
     /// Registers every object on an already-connected connection.
     ///
     /// Tests use this with a peer-to-peer connection so the facade can be
-    /// exercised without a message bus.
+    /// exercised without a message bus. No policy is enforced; every action is
+    /// granted.
     pub fn attach(daemon: Daemon<B>, conn: Connection) -> zbus::Result<Self> {
-        let shared = Arc::new(Shared::new(daemon, conn.clone()));
+        Self::attach_authorized(daemon, conn, Arc::new(AllowAllAuthorization))
+    }
+
+    /// Registers every object on an already-connected connection with an
+    /// explicit policy backend.
+    pub fn attach_authorized(
+        daemon: Daemon<B>,
+        conn: Connection,
+        authorization: Arc<dyn Authorization>,
+    ) -> zbus::Result<Self> {
+        let shared = Arc::new(Shared::with_authorization(
+            daemon,
+            conn.clone(),
+            authorization,
+        ));
         let server = Self {
             conn: conn.clone(),
             shared: shared.clone(),
@@ -211,10 +229,22 @@ impl<B: NetworkBackend + Send + Sync + 'static> Server<B> {
         Ok(server)
     }
 
-    fn connect(daemon: Daemon<B>, name: &str) -> zbus::Result<Self> {
+    fn polkit_authorization() -> zbus::Result<Arc<dyn Authorization>> {
+        PolkitAuthorization::new()
+            .map(|authorization| -> Arc<dyn Authorization> { Arc::new(authorization) })
+            .map_err(|error| {
+                zbus::Error::Failure(format!("cannot set up polkit authorization: {error}"))
+            })
+    }
+
+    fn connect(
+        daemon: Daemon<B>,
+        name: &str,
+        authorization: Arc<dyn Authorization>,
+    ) -> zbus::Result<Self> {
         let conn = Connection::session()?;
         conn.request_name(name)
             .map_err(|error| zbus::Error::Failure(format!("cannot claim {name}: {error}")))?;
-        Self::attach(daemon, conn)
+        Self::attach_authorized(daemon, conn, authorization)
     }
 }

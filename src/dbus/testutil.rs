@@ -10,11 +10,12 @@
 
 use std::net::IpAddr;
 use std::os::unix::net::UnixStream;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use zbus::blocking::connection::Builder as ConnectionBuilder;
 use zbus::blocking::{Connection, Proxy};
 
+use crate::authorization::Authorization;
 use crate::connection::activation::{ActivationEngine, ActivationError};
 use crate::connection::device::DeviceInfo;
 use crate::connection::ip::ActivationOutcome;
@@ -299,7 +300,20 @@ static P2P_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 
 impl TestServer {
     pub fn start(daemon: Daemon<FakeBackend>) -> zbus::Result<Self> {
-        let _gate = P2P_GATE.get_or_init(|| Mutex::new(())).lock().unwrap();
+        Self::start_authorized(
+            daemon,
+            Arc::new(crate::authorization::AllowAllAuthorization),
+        )
+    }
+
+    pub fn start_authorized(
+        daemon: Daemon<FakeBackend>,
+        authorization: Arc<dyn Authorization>,
+    ) -> zbus::Result<Self> {
+        let _gate = P2P_GATE
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (server_side, client_side) = UnixStream::pair()?;
         let guid = zbus::Guid::generate();
         let server_handle = std::thread::spawn(move || {
@@ -312,7 +326,7 @@ impl TestServer {
         let server_conn = server_handle
             .join()
             .expect("server connection thread panics")?;
-        let server = super::Server::attach(daemon, server_conn)?;
+        let server = super::Server::attach_authorized(daemon, server_conn, authorization)?;
         Ok(Self {
             server,
             client: client_conn,

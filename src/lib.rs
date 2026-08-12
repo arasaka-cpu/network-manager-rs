@@ -1,5 +1,6 @@
 #![cfg_attr(not(target_os = "linux"), allow(unused))]
 
+pub mod authorization;
 pub mod connection;
 pub mod daemon;
 pub mod dbus;

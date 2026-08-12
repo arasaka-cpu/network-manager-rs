@@ -11,9 +11,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use zbus::blocking::Connection;
+use zbus::names::UniqueName;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
+use crate::authorization::{
+    AllowAllAuthorization, Authorization, AuthorizationDecision, AuthorizationError, CallerIdentity,
+};
 use crate::connection::activation::{ActiveConnection, ActiveConnectionId};
 use crate::connection::profile::ConnectionProfile;
 use crate::connection::state::ConnectionEvent;
@@ -44,10 +48,20 @@ pub struct Shared<B> {
     active_connections: Mutex<HashMap<u64, ()>>,
     /// Last root `State` value emitted on the bus.
     root_state: Mutex<u32>,
+    /// Policy backend answering `GetPermissions` and privileged-method checks.
+    authorization: Arc<dyn Authorization>,
 }
 
 impl<B: NetworkBackend + Send + Sync + 'static> Shared<B> {
     pub fn new(daemon: Daemon<B>, conn: Connection) -> Self {
+        Self::with_authorization(daemon, conn, Arc::new(AllowAllAuthorization))
+    }
+
+    pub fn with_authorization(
+        daemon: Daemon<B>,
+        conn: Connection,
+        authorization: Arc<dyn Authorization>,
+    ) -> Self {
         Self {
             daemon: Mutex::new(daemon),
             conn,
@@ -57,11 +71,47 @@ impl<B: NetworkBackend + Send + Sync + 'static> Shared<B> {
             access_points: Mutex::new(HashMap::new()),
             active_connections: Mutex::new(HashMap::new()),
             root_state: Mutex::new(super::NM_STATE_DISCONNECTED),
+            authorization,
         }
     }
 
     pub fn connection(&self) -> &Connection {
         &self.conn
+    }
+
+    // --- Authorization -----------------------------------------------------
+
+    /// Resolves the message-header caller and asks the policy backend whether it
+    /// may perform `action`, failing closed with `PermissionDenied` on any
+    /// denial or backend error.
+    pub fn authorize(&self, sender: Option<&UniqueName>, action: &str) -> Result<(), FacadeError> {
+        match self.authorization.check(
+            &CallerIdentity::from_sender(sender.map(|name| name.as_str())),
+            action,
+        ) {
+            Ok(AuthorizationDecision::Yes) => Ok(()),
+            Ok(AuthorizationDecision::No)
+            | Ok(AuthorizationDecision::Unknown)
+            | Err(AuthorizationError::UnidentifiableCaller)
+            | Err(AuthorizationError::Backend(_)) => {
+                Err(FacadeError::PermissionDenied(action.to_string()))
+            }
+        }
+    }
+
+    /// Renders the caller's standing for `action` as the `GetPermissions`
+    /// value: `yes`, `no` or `unknown`.
+    pub fn permission(&self, sender: Option<&UniqueName>, action: &str) -> String {
+        match self.authorization.check(
+            &CallerIdentity::from_sender(sender.map(|name| name.as_str())),
+            action,
+        ) {
+            Ok(AuthorizationDecision::Yes) => "yes".to_string(),
+            Ok(AuthorizationDecision::No) => "no".to_string(),
+            Ok(AuthorizationDecision::Unknown)
+            | Err(AuthorizationError::UnidentifiableCaller)
+            | Err(AuthorizationError::Backend(_)) => "unknown".to_string(),
+        }
     }
 
     // --- Daemon access ---------------------------------------------------

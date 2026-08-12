@@ -10,6 +10,31 @@ use super::testutil::{
     DualStackEngine, FakeBackend, SuccessEngine, TestServer, ethernet_link, wifi_interface,
 };
 
+/// The full D-Bus error name the server put in an error reply, if the error is
+/// one.
+fn method_error_name(error: &zbus::Error) -> Option<String> {
+    match error {
+        zbus::Error::MethodError(name, _, _) => Some(name.to_string()),
+        _ => None,
+    }
+}
+
+/// A minimal ethernet connection settings dict for the p2p tests.
+fn ethernet_settings_dict(id: &str) -> super::convert::SettingsDict {
+    let mut connection = std::collections::HashMap::new();
+    connection.insert(
+        "id".to_string(),
+        zbus::zvariant::OwnedValue::from(zbus::zvariant::Str::from(id)),
+    );
+    connection.insert(
+        "type".to_string(),
+        zbus::zvariant::OwnedValue::from(zbus::zvariant::Str::from("802-3-ethernet")),
+    );
+    let mut settings = super::convert::SettingsDict::new();
+    settings.insert("connection".to_string(), connection);
+    settings
+}
+
 /// Activates a fixed wired profile against device 3 and returns the active
 /// connection id, mirroring the setup the IPv4 wire tests use.
 fn activate_ethernet_connection(server: &TestServer) -> u64 {
@@ -460,4 +485,211 @@ fn p2p_probe_ip6config_is_empty_without_ipv6_outcome() {
     assert!(routes.is_empty());
     let addresses: Vec<(Vec<u8>, u32, Vec<u8>)> = ip6.get_property("Addresses").unwrap();
     assert!(addresses.is_empty());
+}
+
+// --- Authorization ---------------------------------------------------------
+
+const PERMISSION_DENIED: &str = "org.freedesktop.NetworkManager.PermissionDenied";
+
+/// Every privileged method must be rejected with `PermissionDenied` before any
+/// daemon state changes when the policy backend denies the action.
+#[test]
+fn p2p_deny_all_rejects_privileged_methods() {
+    use crate::authorization::DenyAllAuthorization;
+
+    let backend = FakeBackend::default().with_link(ethernet_link(3, "eth0", true));
+    let server = TestServer::start_authorized(
+        Daemon::with_engine(backend, Box::new(SuccessEngine)),
+        std::sync::Arc::new(DenyAllAuthorization),
+    )
+    .expect("server starts");
+
+    let root = server
+        .proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager")
+        .unwrap();
+    let deny = |result: Result<zbus::Message, zbus::Error>| {
+        assert_eq!(
+            method_error_name(&result.unwrap_err()).as_deref(),
+            Some(PERMISSION_DENIED)
+        );
+    };
+
+    deny(root.call_method("Enable", &(true)));
+    deny(root.call_method("Sleep", &(false)));
+    deny(root.call_method("Reload", &(0u32)));
+
+    let fake_active = zbus::zvariant::OwnedObjectPath::try_from(
+        "/org/freedesktop/NetworkManager/ActiveConnection/1",
+    )
+    .unwrap();
+    deny(root.call_method("DeactivateConnection", &(fake_active)));
+
+    let device =
+        zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/3")
+            .unwrap();
+    let root_object = zbus::zvariant::OwnedObjectPath::try_from("/").unwrap();
+    let settings = ethernet_settings_dict("eth0-conn");
+    deny(root.call_method(
+        "AddAndActivateConnection",
+        &(settings.clone(), device.clone(), root_object),
+    ));
+
+    assert!(
+        server.daemon().list_profiles().unwrap().is_empty(),
+        "a denied AddAndActivateConnection must not create a profile"
+    );
+    assert!(
+        server.daemon().active_connections().is_empty(),
+        "a denied AddAndActivateConnection must not create an active connection"
+    );
+
+    let settings_proxy = server
+        .proxy(
+            super::SETTINGS_PATH,
+            "org.freedesktop.NetworkManager.Settings",
+        )
+        .unwrap();
+    deny(settings_proxy.call_method("AddConnection", &(settings.clone())));
+
+    let device_proxy = server
+        .proxy(
+            "/org/freedesktop/NetworkManager/Devices/3",
+            "org.freedesktop.NetworkManager.Device",
+        )
+        .unwrap();
+    deny(device_proxy.call_method("Disconnect", &()));
+    assert!(
+        server.daemon().active_connections().is_empty(),
+        "a denied Disconnect must not touch daemon state"
+    );
+}
+
+/// A denied connection profile deletion must reject before the store changes.
+#[test]
+fn p2p_deny_all_rejects_settings_connection_delete() {
+    use crate::authorization::DenyAllAuthorization;
+
+    let backend = FakeBackend::default().with_link(ethernet_link(3, "eth0", true));
+    let mut daemon = Daemon::with_engine(backend, Box::new(SuccessEngine));
+    daemon
+        .create_profile(
+            crate::connection::profile::ConnectionProfile::wifi(
+                "home",
+                "home",
+                crate::linux::model::Ssid::from_bytes(b"home").unwrap(),
+                crate::connection::profile::WifiSecurity::open(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let server = TestServer::start_authorized(daemon, std::sync::Arc::new(DenyAllAuthorization))
+        .expect("server starts");
+
+    let path = super::settings_connection_path(&super::convert::stable_uuid("home"));
+    let connection = server
+        .proxy(&path, "org.freedesktop.NetworkManager.Settings.Connection")
+        .unwrap();
+    let err = connection.call_method("Delete", &()).unwrap_err();
+    assert_eq!(method_error_name(&err).as_deref(), Some(PERMISSION_DENIED));
+    assert!(
+        server.daemon().get_profile(&"home".to_string()).is_ok(),
+        "a denied Delete must keep the profile in the store"
+    );
+}
+
+/// Every privileged method must record the caller and the NetworkManager action
+/// it is held to, so the policy layer can be audited.
+#[test]
+fn p2p_recording_authorization_records_callers_and_actions() {
+    use crate::authorization::{AllowAllAuthorization, RecordingAuthorization};
+
+    let recording = std::sync::Arc::new(RecordingAuthorization::new(std::sync::Arc::new(
+        AllowAllAuthorization,
+    )));
+    let backend = FakeBackend::default().with_link(ethernet_link(3, "eth0", true));
+    let server = TestServer::start_authorized(
+        Daemon::with_engine(backend, Box::new(SuccessEngine)),
+        recording.clone(),
+    )
+    .expect("server starts");
+
+    let root = server
+        .proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager")
+        .unwrap();
+    root.call_method("Enable", &(true)).unwrap();
+    root.call_method("Reload", &(0u32)).unwrap();
+
+    let device =
+        zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/3")
+            .unwrap();
+    let root_object = zbus::zvariant::OwnedObjectPath::try_from("/").unwrap();
+    root.call_method(
+        "AddAndActivateConnection",
+        &(ethernet_settings_dict("eth0-conn"), device, root_object),
+    )
+    .unwrap();
+
+    let settings_proxy = server
+        .proxy(
+            super::SETTINGS_PATH,
+            "org.freedesktop.NetworkManager.Settings",
+        )
+        .unwrap();
+    settings_proxy
+        .call_method("AddConnection", &(ethernet_settings_dict("eth0-other")))
+        .unwrap();
+
+    let calls = recording.calls();
+    let actions: Vec<&str> = calls.iter().map(|(_, action)| action.as_str()).collect();
+    assert_eq!(
+        actions,
+        vec![
+            crate::authorization::ACTION_ENABLE_DISABLE_NETWORK,
+            crate::authorization::ACTION_RELOAD,
+            crate::authorization::ACTION_NETWORK_CONTROL,
+            crate::authorization::ACTION_SETTINGS_MODIFY_SYSTEM,
+        ]
+    );
+    for (caller, _) in &calls {
+        assert!(
+            matches!(
+                caller,
+                crate::authorization::CallerIdentity::UniqueName(_)
+                    | crate::authorization::CallerIdentity::Unidentifiable
+            ),
+            "caller identity must be derived from the message header"
+        );
+    }
+}
+
+/// `GetPermissions` must reflect the policy backend for the caller instead of
+/// the hard-coded `yes` list.
+#[test]
+fn p2p_permissions_reflect_authorization_backend() {
+    use crate::authorization::DenyAllAuthorization;
+
+    let backend = FakeBackend::default().with_link(ethernet_link(3, "eth0", true));
+    let server = TestServer::start_authorized(
+        Daemon::new(backend),
+        std::sync::Arc::new(DenyAllAuthorization),
+    )
+    .expect("server starts");
+
+    let root = server
+        .proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager")
+        .unwrap();
+    let permissions: Vec<(String, String)> = root
+        .call_method("GetPermissions", &())
+        .unwrap()
+        .body()
+        .deserialize()
+        .unwrap();
+    assert!(!permissions.is_empty());
+    for (action, value) in &permissions {
+        assert!(
+            crate::authorization::PERMISSION_ACTIONS.contains(&action.as_str()),
+            "GetPermissions only reports known actions, got {action}"
+        );
+        assert_eq!(value, "no", "a denied caller must see {action} = no");
+    }
 }

@@ -8,9 +8,13 @@
 use std::sync::Arc;
 
 use zbus::interface;
+use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedObjectPath;
 
+use crate::authorization::{
+    ACTION_ENABLE_DISABLE_NETWORK, ACTION_NETWORK_CONTROL, ACTION_RELOAD, PERMISSION_ACTIONS,
+};
 use crate::connection::activation::ActiveConnectionId;
 use crate::connection::profile::ConnectionProfile;
 use crate::daemon::NetworkBackend;
@@ -169,11 +173,14 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
 
     fn activate_connection(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         settings: super::convert::SettingsDict,
         device: OwnedObjectPath,
         _specific_object: OwnedObjectPath,
     ) -> Result<OwnedObjectPath, FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_NETWORK_CONTROL)?;
         let active = self.activate(settings, device.as_str())?;
         self.shared
             .register_active_connection_object(&active)
@@ -190,11 +197,14 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
 
     fn add_and_activate_connection(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         settings: super::convert::SettingsDict,
         device: OwnedObjectPath,
         _specific_object: OwnedObjectPath,
     ) -> Result<(OwnedObjectPath, OwnedObjectPath), FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_NETWORK_CONTROL)?;
         let (connection_path, active_connection_path) =
             self.add_and_activate(&emitter, settings, &device)?;
         Ok((
@@ -207,6 +217,7 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
 
     fn add_and_activate_connection2(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         settings: super::convert::SettingsDict,
         device: OwnedObjectPath,
@@ -220,6 +231,8 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
         ),
         FacadeError,
     > {
+        self.shared
+            .authorize(header.sender(), ACTION_NETWORK_CONTROL)?;
         let (connection_path, active_connection_path) =
             self.add_and_activate(&emitter, settings, &device)?;
         Ok((
@@ -231,7 +244,13 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
         ))
     }
 
-    fn deactivate_connection(&self, active: OwnedObjectPath) -> Result<(), FacadeError> {
+    fn deactivate_connection(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        active: OwnedObjectPath,
+    ) -> Result<(), FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_NETWORK_CONTROL)?;
         self.shared
             .daemon_mut()
             .deactivate(self.active_id(active.as_str())?)?;
@@ -239,11 +258,19 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
         Ok(())
     }
 
-    fn sleep(&self, _sleep: bool) {}
+    fn sleep(&self, #[zbus(header)] header: Header<'_>, _sleep: bool) -> Result<(), FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_ENABLE_DISABLE_NETWORK)
+    }
 
-    fn enable(&self, _enable: bool) {}
+    fn enable(&self, #[zbus(header)] header: Header<'_>, _enable: bool) -> Result<(), FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_ENABLE_DISABLE_NETWORK)
+    }
 
-    fn reload(&self, _flags: u32) {}
+    fn reload(&self, #[zbus(header)] header: Header<'_>, _flags: u32) -> Result<(), FacadeError> {
+        self.shared.authorize(header.sender(), ACTION_RELOAD)
+    }
 
     fn set_logging(&self, _level: String, _domains: String) {}
 
@@ -251,53 +278,16 @@ impl<B: NetworkBackend + Send + Sync + 'static> RootIface<B> {
         ("INFO".to_string(), String::new())
     }
 
-    fn get_permissions(&self) -> Vec<(String, String)> {
-        vec![
-            (
-                "org.freedesktop.NetworkManager.enable-disable-network".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.enable-disable-wifi".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.network-control".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.wifi.share.protected".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.wifi.share.open".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.settings.modify.system".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.settings.modify.own".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.reload".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.checkpoint-rollback".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.enable-disable-statistics".to_string(),
-                "yes".to_string(),
-            ),
-            (
-                "org.freedesktop.NetworkManager.enable-disable-connectivity-check".to_string(),
-                "yes".to_string(),
-            ),
-        ]
+    fn get_permissions(&self, #[zbus(header)] header: Header<'_>) -> Vec<(String, String)> {
+        PERMISSION_ACTIONS
+            .iter()
+            .map(|action| {
+                (
+                    action.to_string(),
+                    self.shared.permission(header.sender(), action),
+                )
+            })
+            .collect()
     }
 
     fn check_connectivity(&self) -> u32 {

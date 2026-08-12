@@ -9,9 +9,11 @@ use std::sync::Arc;
 
 use zbus::blocking::Connection;
 use zbus::interface;
+use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
+use crate::authorization::{ACTION_NETWORK_CONTROL, ACTION_SETTINGS_MODIFY_SYSTEM};
 use crate::connection::device::{DeviceInfo, DeviceKind as DomainDeviceKind};
 use crate::connection::state::ConnectionState;
 use crate::daemon::Daemon;
@@ -242,8 +244,11 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
 
     fn disconnect(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] _emitter: SignalEmitter<'_>,
     ) -> Result<(), FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_NETWORK_CONTROL)?;
         let iface = self.interface_name()?;
         let active = self.active()?.ok_or(FacadeError::NotActive(iface))?;
         self.shared.daemon_mut().deactivate(active.id)?;
@@ -253,8 +258,11 @@ impl<B: crate::daemon::NetworkBackend + Send + Sync + 'static> DeviceIface<B> {
 
     fn delete(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<(), FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)?;
         let iface = self.interface_name()?;
         let active = self.active()?.ok_or(FacadeError::NotActive(iface))?;
         let profile_id = active.profile.id.clone();

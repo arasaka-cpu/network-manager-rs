@@ -9,9 +9,11 @@
 use std::sync::Arc;
 
 use zbus::interface;
+use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedObjectPath;
 
+use crate::authorization::ACTION_SETTINGS_MODIFY_SYSTEM;
 use crate::daemon::NetworkBackend;
 
 use super::convert::{SettingsDict, profile_to_settings, settings_to_profile, stable_uuid};
@@ -82,9 +84,12 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
 
     fn add_connection(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         settings: SettingsDict,
     ) -> Result<OwnedObjectPath, FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)?;
         let profile = settings_to_profile(&settings)?;
         self.shared.daemon_mut().create_profile(profile.clone())?;
         self.shared
@@ -103,9 +108,12 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
 
     fn add_connection_unsaved(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] _emitter: SignalEmitter<'_>,
         settings: SettingsDict,
     ) -> Result<OwnedObjectPath, FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)?;
         // The facade persists everything immediately; "unsaved" is accepted for
         // client compatibility but behaves identically to a saved connection.
         let profile = settings_to_profile(&settings)?;
@@ -121,6 +129,7 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
 
     fn add_connection2(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         settings: SettingsDict,
         _flags: u32,
@@ -132,6 +141,8 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
         ),
         FacadeError,
     > {
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)?;
         let profile = settings_to_profile(&settings)?;
         self.shared.daemon_mut().create_profile(profile.clone())?;
         self.shared
@@ -152,15 +163,30 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsIface<B> {
         ))
     }
 
-    fn load_connections(&self, _filenames: Vec<String>) -> (bool, Vec<String>) {
-        (true, Vec::new())
+    fn load_connections(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        _filenames: Vec<String>,
+    ) -> Result<(bool, Vec<String>), FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)?;
+        Ok((true, Vec::new()))
     }
 
-    fn reload_connections(&self) -> bool {
-        true
+    fn reload_connections(&self, #[zbus(header)] header: Header<'_>) -> Result<bool, FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)?;
+        Ok(true)
     }
 
-    fn save_hostname(&self, _hostname: String) {}
+    fn save_hostname(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        _hostname: String,
+    ) -> Result<(), FacadeError> {
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)
+    }
 
     #[zbus(property)]
     fn connections(&self) -> Result<Vec<OwnedObjectPath>, zbus::fdo::Error> {
@@ -201,6 +227,28 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsConnectionIface<B> {
             .get_profile(&self.profile_id)
             .map_err(FacadeError::from)
     }
+
+    fn update_inner(
+        &self,
+        emitter: &SignalEmitter<'_>,
+        settings: SettingsDict,
+    ) -> Result<(), FacadeError> {
+        let profile = settings_to_profile(&settings)?;
+        if profile.id != self.profile_id {
+            return Err(FacadeError::InvalidProperty(
+                "connection.id cannot change on update".to_string(),
+            ));
+        }
+        self.shared.daemon_mut().update_profile(profile)?;
+        super::emit(Self::updated(emitter))?;
+        Ok(())
+    }
+
+    fn delete_inner(&self, emitter: &SignalEmitter<'_>) -> Result<(), FacadeError> {
+        self.shared.daemon_mut().delete_profile(&self.profile_id)?;
+        super::emit(Self::removed(emitter))?;
+        self.shared.unregister_connection(&self.profile_id)
+    }
 }
 
 #[interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
@@ -221,35 +269,34 @@ impl<B: NetworkBackend + Send + Sync + 'static> SettingsConnectionIface<B> {
 
     fn update(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         settings: SettingsDict,
     ) -> Result<(), FacadeError> {
-        let profile = settings_to_profile(&settings)?;
-        if profile.id != self.profile_id {
-            return Err(FacadeError::InvalidProperty(
-                "connection.id cannot change on update".to_string(),
-            ));
-        }
-        self.shared.daemon_mut().update_profile(profile)?;
-        super::emit(Self::updated(&emitter))?;
-        Ok(())
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)?;
+        self.update_inner(&emitter, settings)
     }
 
     fn update_unsaved(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
         settings: SettingsDict,
     ) -> Result<(), FacadeError> {
-        self.update(emitter, settings)
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)?;
+        self.update_inner(&emitter, settings)
     }
 
     fn delete(
         &self,
+        #[zbus(header)] header: Header<'_>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<(), FacadeError> {
-        self.shared.daemon_mut().delete_profile(&self.profile_id)?;
-        super::emit(Self::removed(&emitter))?;
-        self.shared.unregister_connection(&self.profile_id)
+        self.shared
+            .authorize(header.sender(), ACTION_SETTINGS_MODIFY_SYSTEM)?;
+        self.delete_inner(&emitter)
     }
 
     fn get_settings_flags(&self) -> u32 {

@@ -5,60 +5,140 @@
 //! ones. Domain errors (store, activation, validation) are translated into
 //! these names at the interface boundary.
 
-use zbus::DBusError;
+use zbus::names::ErrorName;
 
 use crate::connection::activation::ActivationError;
 use crate::connection::profile::ProfileValidationError;
 use crate::connection::store::StoreError;
 
 /// Errors reported by the NetworkManager-compatible D-Bus layer.
-#[derive(Clone, Debug, DBusError)]
-#[zbus(prefix = "org.freedesktop.NetworkManager")]
+///
+/// The [`zbus::DBusError`] implementation below maps every variant to the
+/// exact error name NetworkManager uses on the bus. The error-name derive
+/// cannot express these because it prefixes every variant with a single
+/// struct-level prefix, but the standard generic failure
+/// (`org.freedesktop.DBus.Error.Failed`) lives under a different prefix than
+/// the NetworkManager errors.
+#[derive(Clone, Debug)]
 pub enum FacadeError {
     /// The referenced connection profile does not exist.
-    #[zbus(name = "org.freedesktop.NetworkManager.Settings.Connection.UnknownConnection")]
     UnknownConnection(String),
 
     /// A settings dictionary was structurally invalid.
-    #[zbus(name = "org.freedesktop.NetworkManager.Settings.Connection.InvalidSetting")]
     InvalidSetting(String),
 
     /// A settings dictionary held an invalid value for a known property.
-    #[zbus(name = "org.freedesktop.NetworkManager.Settings.Connection.InvalidProperty")]
     InvalidProperty(String),
 
     /// A settings dictionary was missing a required setting section.
-    #[zbus(name = "org.freedesktop.NetworkManager.Settings.Connection.MissingSetting")]
     MissingSetting(String),
 
     /// The referenced device does not exist.
-    #[zbus(name = "org.freedesktop.NetworkManager.UnknownDevice")]
     UnknownDevice(String),
 
     /// The referenced active connection does not exist.
-    #[zbus(name = "org.freedesktop.NetworkManager.UnknownActiveConnection")]
     UnknownActiveConnection(String),
 
     /// The connection is not currently active.
-    #[zbus(name = "org.freedesktop.NetworkManager.NotActive")]
     NotActive(String),
 
     /// The connection is already active.
-    #[zbus(name = "org.freedesktop.NetworkManager.AlreadyActive")]
     AlreadyActive(String),
 
     /// The caller lacks the permission to perform the operation.
-    #[zbus(name = "org.freedesktop.NetworkManager.PermissionDenied")]
     PermissionDenied(String),
 
     /// The requested operation is not implemented by this facade.
-    #[zbus(name = "org.freedesktop.NetworkManager.NotSupported")]
     NotSupported(String),
 
     /// The backend failed while serving the request.
-    #[zbus(name = "org.freedesktop.DBus.Error.Failed")]
     Internal(String),
 }
+
+impl zbus::DBusError for FacadeError {
+    fn name(&self) -> zbus::names::ErrorName<'_> {
+        match self {
+            Self::UnknownConnection(_) => ErrorName::from_static_str_unchecked(
+                "org.freedesktop.NetworkManager.Settings.Connection.UnknownConnection",
+            ),
+            Self::InvalidSetting(_) => ErrorName::from_static_str_unchecked(
+                "org.freedesktop.NetworkManager.Settings.Connection.InvalidSetting",
+            ),
+            Self::InvalidProperty(_) => ErrorName::from_static_str_unchecked(
+                "org.freedesktop.NetworkManager.Settings.Connection.InvalidProperty",
+            ),
+            Self::MissingSetting(_) => ErrorName::from_static_str_unchecked(
+                "org.freedesktop.NetworkManager.Settings.Connection.MissingSetting",
+            ),
+            Self::UnknownDevice(_) => {
+                ErrorName::from_static_str_unchecked("org.freedesktop.NetworkManager.UnknownDevice")
+            }
+            Self::UnknownActiveConnection(_) => ErrorName::from_static_str_unchecked(
+                "org.freedesktop.NetworkManager.UnknownActiveConnection",
+            ),
+            Self::NotActive(_) => {
+                ErrorName::from_static_str_unchecked("org.freedesktop.NetworkManager.NotActive")
+            }
+            Self::AlreadyActive(_) => {
+                ErrorName::from_static_str_unchecked("org.freedesktop.NetworkManager.AlreadyActive")
+            }
+            Self::PermissionDenied(_) => ErrorName::from_static_str_unchecked(
+                "org.freedesktop.NetworkManager.PermissionDenied",
+            ),
+            Self::NotSupported(_) => {
+                ErrorName::from_static_str_unchecked("org.freedesktop.NetworkManager.NotSupported")
+            }
+            Self::Internal(_) => {
+                ErrorName::from_static_str_unchecked("org.freedesktop.DBus.Error.Failed")
+            }
+        }
+    }
+
+    fn description(&self) -> Option<&str> {
+        Some(match self {
+            Self::UnknownConnection(desc)
+            | Self::InvalidSetting(desc)
+            | Self::InvalidProperty(desc)
+            | Self::MissingSetting(desc)
+            | Self::UnknownDevice(desc)
+            | Self::UnknownActiveConnection(desc)
+            | Self::NotActive(desc)
+            | Self::AlreadyActive(desc)
+            | Self::PermissionDenied(desc)
+            | Self::NotSupported(desc)
+            | Self::Internal(desc) => desc.as_str(),
+        })
+    }
+
+    fn create_reply(&self, call: &zbus::message::Header) -> zbus::Result<zbus::message::Message> {
+        let name = self.name();
+        match self {
+            Self::UnknownConnection(desc)
+            | Self::InvalidSetting(desc)
+            | Self::InvalidProperty(desc)
+            | Self::MissingSetting(desc)
+            | Self::UnknownDevice(desc)
+            | Self::UnknownActiveConnection(desc)
+            | Self::NotActive(desc)
+            | Self::AlreadyActive(desc)
+            | Self::PermissionDenied(desc)
+            | Self::NotSupported(desc)
+            | Self::Internal(desc) => {
+                zbus::message::Message::error(call, name)?.build(&(desc.as_str()))
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for FacadeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = zbus::DBusError::name(self);
+        let description = zbus::DBusError::description(self).unwrap_or("no description");
+        write!(f, "{name}: {description}")
+    }
+}
+
+impl std::error::Error for FacadeError {}
 
 impl FacadeError {
     /// Builds an [`FacadeError::NotSupported`] for an operation that the
