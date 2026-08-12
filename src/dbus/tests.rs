@@ -6,7 +6,72 @@
 
 use crate::daemon::Daemon;
 
-use super::testutil::{FakeBackend, SuccessEngine, TestServer, ethernet_link, wifi_interface};
+use super::testutil::{
+    DualStackEngine, FakeBackend, SuccessEngine, TestServer, ethernet_link, wifi_interface,
+};
+
+/// Activates a fixed wired profile against device 3 and returns the active
+/// connection id, mirroring the setup the IPv4 wire tests use.
+fn activate_ethernet_connection(server: &TestServer) -> u64 {
+    let device =
+        zbus::zvariant::OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/Devices/3")
+            .unwrap();
+    let root = server
+        .proxy(super::ROOT_PATH, "org.freedesktop.NetworkManager")
+        .unwrap();
+
+    let mut connection = std::collections::HashMap::new();
+    connection.insert(
+        "id".to_string(),
+        zbus::zvariant::OwnedValue::from(zbus::zvariant::Str::from("eth0-conn")),
+    );
+    connection.insert(
+        "type".to_string(),
+        zbus::zvariant::OwnedValue::from(zbus::zvariant::Str::from("802-3-ethernet")),
+    );
+    let mut settings = super::convert::SettingsDict::new();
+    settings.insert("connection".to_string(), connection);
+
+    let (_, active): (
+        zbus::zvariant::OwnedObjectPath,
+        zbus::zvariant::OwnedObjectPath,
+    ) = root
+        .call_method(
+            "AddAndActivateConnection",
+            &(
+                settings,
+                device,
+                zbus::zvariant::OwnedObjectPath::try_from("/").unwrap(),
+            ),
+        )
+        .unwrap()
+        .body()
+        .deserialize()
+        .unwrap();
+
+    active
+        .as_str()
+        .strip_prefix("/org/freedesktop/NetworkManager/ActiveConnection/")
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+fn route_data_str(
+    entry: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<String> {
+    let value = zbus::zvariant::Value::from(entry.get(key)?.clone());
+    String::try_from(&value).ok()
+}
+
+fn route_data_u32(
+    entry: &std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+    key: &str,
+) -> Option<u32> {
+    let value = zbus::zvariant::Value::from(entry.get(key)?.clone());
+    u32::try_from(&value).ok()
+}
 
 #[test]
 fn p2p_probe_root_devices_property() {
@@ -266,4 +331,133 @@ fn p2p_probe_wire_signatures_match_networkmanager() {
         .introspect()
         .unwrap();
     assert!(settings_xml.contains(r#"<method name="AddConnection2""#));
+}
+
+/// The IPv6 `Routes` property must carry NetworkManager's `a(ayuayu)` tuples:
+/// raw 16-octet destination and next-hop arrays, prefix, and metric, exactly as
+/// the IP engine reports them.
+#[test]
+fn p2p_probe_ip6config_routes_match_networkmanager_encoding() {
+    let backend = FakeBackend::default().with_link(ethernet_link(3, "eth0", true));
+    let server = TestServer::start(Daemon::with_engine(backend, Box::new(DualStackEngine)))
+        .expect("server starts");
+    let id = activate_ethernet_connection(&server);
+    let ip6 = server
+        .proxy(
+            &super::ip6_path(crate::connection::activation::ActiveConnectionId::new(id)),
+            "org.freedesktop.NetworkManager.IP6Config",
+        )
+        .unwrap();
+
+    let routes: Vec<(Vec<u8>, u32, Vec<u8>, u32)> = ip6.get_property("Routes").unwrap();
+    let db8_one: [u8; 16] = "2001:db8:1::"
+        .parse::<std::net::Ipv6Addr>()
+        .unwrap()
+        .octets();
+    let db8_one_hop: [u8; 16] = "2001:db8:1::1"
+        .parse::<std::net::Ipv6Addr>()
+        .unwrap()
+        .octets();
+    let db8_ten: [u8; 16] = "2001:db8:10::"
+        .parse::<std::net::Ipv6Addr>()
+        .unwrap()
+        .octets();
+    assert_eq!(
+        routes,
+        vec![
+            (db8_one.to_vec(), 64, [0u8; 16].to_vec(), 0),
+            (db8_ten.to_vec(), 64, db8_one_hop.to_vec(), 100),
+            ([0u8; 16].to_vec(), 0, db8_one_hop.to_vec(), 50),
+        ]
+    );
+
+    let addresses: Vec<(Vec<u8>, u32, Vec<u8>)> = ip6.get_property("Addresses").unwrap();
+    assert_eq!(
+        addresses,
+        vec![(
+            "2001:db8:1::184"
+                .parse::<std::net::Ipv6Addr>()
+                .unwrap()
+                .octets()
+                .to_vec(),
+            64,
+            [0u8; 16].to_vec(),
+        )]
+    );
+}
+
+/// The structured `RouteData` (a dictionary per route) must stay consistent
+/// with the `Routes` array: same entries, network-masked destination, explicit
+/// prefix and metric, and a `next-hop` key only where a gateway exists.
+#[test]
+fn p2p_probe_ip6config_route_data_matches_routes() {
+    let backend = FakeBackend::default().with_link(ethernet_link(3, "eth0", true));
+    let server = TestServer::start(Daemon::with_engine(backend, Box::new(DualStackEngine)))
+        .expect("server starts");
+    let id = activate_ethernet_connection(&server);
+    let ip6 = server
+        .proxy(
+            &super::ip6_path(crate::connection::activation::ActiveConnectionId::new(id)),
+            "org.freedesktop.NetworkManager.IP6Config",
+        )
+        .unwrap();
+
+    let routes: Vec<(Vec<u8>, u32, Vec<u8>, u32)> = ip6.get_property("Routes").unwrap();
+    let route_data: Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> =
+        ip6.get_property("RouteData").unwrap();
+    assert_eq!(route_data.len(), routes.len());
+
+    let connected = &route_data[0];
+    assert_eq!(
+        route_data_str(connected, "dest").as_deref(),
+        Some("2001:db8:1::")
+    );
+    assert_eq!(route_data_u32(connected, "prefix"), Some(64));
+    assert_eq!(route_data_u32(connected, "metric"), Some(0));
+    assert!(
+        !connected.contains_key("next-hop"),
+        "the connected route has no gateway"
+    );
+
+    let static_route = &route_data[1];
+    assert_eq!(
+        route_data_str(static_route, "dest").as_deref(),
+        Some("2001:db8:10::")
+    );
+    assert_eq!(
+        route_data_str(static_route, "next-hop").as_deref(),
+        Some("2001:db8:1::1")
+    );
+    assert_eq!(route_data_u32(static_route, "prefix"), Some(64));
+    assert_eq!(route_data_u32(static_route, "metric"), Some(100));
+
+    let default_route = &route_data[2];
+    assert_eq!(route_data_str(default_route, "dest").as_deref(), Some("::"));
+    assert_eq!(route_data_u32(default_route, "prefix"), Some(0));
+    assert_eq!(
+        route_data_str(default_route, "next-hop").as_deref(),
+        Some("2001:db8:1::1")
+    );
+    assert_eq!(route_data_u32(default_route, "metric"), Some(50));
+}
+
+/// An activation without an IPv6 outcome exposes an empty IP6Config rather
+/// than fabricated routes.
+#[test]
+fn p2p_probe_ip6config_is_empty_without_ipv6_outcome() {
+    let backend = FakeBackend::default().with_link(ethernet_link(3, "eth0", true));
+    let server = TestServer::start(Daemon::with_engine(backend, Box::new(SuccessEngine)))
+        .expect("server starts");
+    let id = activate_ethernet_connection(&server);
+    let ip6 = server
+        .proxy(
+            &super::ip6_path(crate::connection::activation::ActiveConnectionId::new(id)),
+            "org.freedesktop.NetworkManager.IP6Config",
+        )
+        .unwrap();
+
+    let routes: Vec<(Vec<u8>, u32, Vec<u8>, u32)> = ip6.get_property("Routes").unwrap();
+    assert!(routes.is_empty());
+    let addresses: Vec<(Vec<u8>, u32, Vec<u8>)> = ip6.get_property("Addresses").unwrap();
+    assert!(addresses.is_empty());
 }

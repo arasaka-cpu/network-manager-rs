@@ -10,7 +10,7 @@
 
 use std::net::IpAddr;
 use std::os::unix::net::UnixStream;
-use std::sync::MutexGuard;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use zbus::blocking::connection::Builder as ConnectionBuilder;
 use zbus::blocking::{Connection, Proxy};
@@ -198,14 +198,108 @@ impl ActivationEngine for SuccessEngine {
     }
 }
 
+/// An activation engine that additionally produces a manual IPv6 outcome with
+/// connected, static and default routes, mirroring what the IP engine installs
+/// for a manual IPv6 profile with static routes.
+#[derive(Default)]
+pub struct DualStackEngine;
+
+impl ActivationEngine for DualStackEngine {
+    fn activate(
+        &mut self,
+        _profile: &ConnectionProfile,
+        _device: &DeviceInfo,
+    ) -> Result<ActivationOutcome, ActivationError> {
+        let outcome = ActivationOutcome {
+            ipv4: Some(crate::connection::ip::Ipv4Outcome {
+                address: "192.168.1.184".parse().unwrap(),
+                prefix_length: 24,
+                gateway: Some("192.168.1.1".parse().unwrap()),
+                dns_servers: vec!["192.168.1.1".parse().unwrap()],
+                search_domains: vec!["lan".to_string()],
+                source: crate::connection::ip::Ipv4Source::AutomaticDhcp,
+                routes: vec![crate::linux::model::Route {
+                    family: crate::linux::model::IpFamily::V4,
+                    destination: IpAddr::V4("192.168.1.0".parse().unwrap()),
+                    prefix_length: 24,
+                    gateway: None,
+                    output_interface: None,
+                    metric: Some(600),
+                    kind: crate::linux::model::RouteKind::Unicast,
+                    scope: crate::linux::model::RouteScope::Link,
+                }],
+                lease: None,
+            }),
+            ipv6: Some(crate::connection::ip::Ipv6Outcome {
+                address: Some("2001:db8:1::184".parse().unwrap()),
+                prefix_length: 64,
+                gateway: Some("2001:db8:1::1".parse().unwrap()),
+                dns_servers: vec!["2001:db8:1::1".parse().unwrap()],
+                search_domains: Vec::new(),
+                routes: vec![
+                    crate::linux::model::Route {
+                        family: crate::linux::model::IpFamily::V6,
+                        destination: IpAddr::V6("2001:db8:1::".parse().unwrap()),
+                        prefix_length: 64,
+                        gateway: None,
+                        output_interface: None,
+                        metric: None,
+                        kind: crate::linux::model::RouteKind::Unicast,
+                        scope: crate::linux::model::RouteScope::Link,
+                    },
+                    crate::linux::model::Route {
+                        family: crate::linux::model::IpFamily::V6,
+                        destination: IpAddr::V6("2001:db8:10::".parse().unwrap()),
+                        prefix_length: 64,
+                        gateway: Some(IpAddr::V6("2001:db8:1::1".parse().unwrap())),
+                        output_interface: None,
+                        metric: Some(100),
+                        kind: crate::linux::model::RouteKind::Unicast,
+                        scope: crate::linux::model::RouteScope::Link,
+                    },
+                    crate::linux::model::Route {
+                        family: crate::linux::model::IpFamily::V6,
+                        destination: IpAddr::V6("::".parse().unwrap()),
+                        prefix_length: 0,
+                        gateway: Some(IpAddr::V6("2001:db8:1::1".parse().unwrap())),
+                        output_interface: None,
+                        metric: Some(50),
+                        kind: crate::linux::model::RouteKind::Unicast,
+                        scope: crate::linux::model::RouteScope::Universe,
+                    },
+                ],
+                link_local: None,
+                source: crate::connection::ip::Ipv6Source::Manual,
+            }),
+            degradation: None,
+        };
+        Ok(outcome)
+    }
+
+    fn deactivate(&mut self, _profile: &ConnectionProfile) -> Result<(), ActivationError> {
+        Ok(())
+    }
+}
+
 /// A running facade over a peer-to-peer connection pair, plus a client end.
+///
+/// The `_gate` guard serializes p2p tests: each `TestServer` holds a lock for
+/// its whole lifetime so at most one connection pair exists at a time. Running
+/// many zbus blocking p2p connections concurrently is unreliable — the shared
+/// async-io reactor occasionally fails to wake a server executor thread and a
+/// method call waits forever — so the p2p suite deliberately runs alone.
 pub struct TestServer {
     pub server: super::Server<FakeBackend>,
     pub client: Connection,
+    _gate: MutexGuard<'static, ()>,
 }
+
+/// Guards the p2p tests against running more than one connection pair at once.
+static P2P_GATE: OnceLock<Mutex<()>> = OnceLock::new();
 
 impl TestServer {
     pub fn start(daemon: Daemon<FakeBackend>) -> zbus::Result<Self> {
+        let _gate = P2P_GATE.get_or_init(|| Mutex::new(())).lock().unwrap();
         let (server_side, client_side) = UnixStream::pair()?;
         let guid = zbus::Guid::generate();
         let server_handle = std::thread::spawn(move || {
@@ -222,6 +316,7 @@ impl TestServer {
         Ok(Self {
             server,
             client: client_conn,
+            _gate,
         })
     }
 

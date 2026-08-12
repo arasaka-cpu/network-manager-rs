@@ -9,6 +9,7 @@
 //! domain does not model are dropped, and secrets are never emitted or stored.
 
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use zbus::zvariant::{Array, OwnedValue, Str, Value};
 
@@ -16,7 +17,7 @@ use crate::connection::profile::{
     ConnectionProfile, ConnectionType, IpConfig, IpMethod, KeyManagement, WifiSecurity,
 };
 use crate::connection::secrets::SecretReference;
-use crate::linux::model::Ssid;
+use crate::linux::model::{IpFamily, Route, RouteKind, RouteScope, Ssid};
 
 use super::error::FacadeError;
 
@@ -110,6 +111,141 @@ fn get_dict_array(
     Vec::<HashMap<String, OwnedValue>>::try_from(value).ok()
 }
 
+// --- Static routes ----------------------------------------------------------
+
+/// Parses the `ipv4.routes` (`aau`) or `ipv6.routes` (`a(ayuayu)`) setting into
+/// model routes. Each NetworkManager route tuple is
+/// `[destination, prefix, next-hop, metric]` with IPv4 scalars in the same
+/// little-endian `u32` encoding the config objects use.
+fn parse_routes(
+    section: &HashMap<String, OwnedValue>,
+    expect_v4: bool,
+) -> Result<Vec<Route>, FacadeError> {
+    let Some(value) = section.get("routes") else {
+        return Ok(Vec::new());
+    };
+    let value = as_value(value);
+    if expect_v4 {
+        let entries: Vec<Vec<u32>> = Vec::try_from(value).map_err(|_| {
+            FacadeError::InvalidProperty("ipv4.routes is not an array of u32 tuples".to_string())
+        })?;
+        entries
+            .into_iter()
+            .map(|entry| {
+                if entry.len() != 4 {
+                    return Err(FacadeError::InvalidProperty(
+                        "ipv4.routes entry is not [dest, prefix, next-hop, metric]".to_string(),
+                    ));
+                }
+                let prefix = entry[1];
+                if prefix > 32 {
+                    return Err(FacadeError::InvalidProperty(
+                        "ipv4.routes prefix exceeds 32".to_string(),
+                    ));
+                }
+                let next_hop = entry[2];
+                Ok(Route {
+                    family: IpFamily::V4,
+                    destination: IpAddr::V4(Ipv4Addr::from(entry[0].to_le_bytes())),
+                    prefix_length: prefix as u8,
+                    gateway: (next_hop != 0)
+                        .then(|| IpAddr::V4(Ipv4Addr::from(next_hop.to_le_bytes()))),
+                    output_interface: None,
+                    metric: (entry[3] != 0).then_some(entry[3]),
+                    kind: RouteKind::Unicast,
+                    scope: if prefix == 0 {
+                        RouteScope::Universe
+                    } else {
+                        RouteScope::Link
+                    },
+                })
+            })
+            .collect()
+    } else {
+        let entries: Vec<(Vec<u8>, u32, Vec<u8>, u32)> = Vec::try_from(value).map_err(|_| {
+            FacadeError::InvalidProperty("ipv6.routes is not a(ayuayu)".to_string())
+        })?;
+        entries
+            .into_iter()
+            .map(|(dest, prefix, next_hop, metric)| {
+                if dest.len() != 16 || next_hop.len() != 16 {
+                    return Err(FacadeError::InvalidProperty(
+                        "ipv6.routes addresses are not 16 octets".to_string(),
+                    ));
+                }
+                if prefix > 128 {
+                    return Err(FacadeError::InvalidProperty(
+                        "ipv6.routes prefix exceeds 128".to_string(),
+                    ));
+                }
+                let mut gateway_bytes = [0u8; 16];
+                gateway_bytes.copy_from_slice(&next_hop);
+                let gateway = Ipv6Addr::from(gateway_bytes);
+                Ok(Route {
+                    family: IpFamily::V6,
+                    destination: IpAddr::V6(Ipv6Addr::from(
+                        <[u8; 16]>::try_from(dest).expect("len checked above"),
+                    )),
+                    prefix_length: prefix as u8,
+                    gateway: (!gateway.is_unspecified()).then_some(IpAddr::V6(gateway)),
+                    output_interface: None,
+                    metric: (metric != 0).then_some(metric),
+                    kind: RouteKind::Unicast,
+                    scope: if prefix == 0 {
+                        RouteScope::Universe
+                    } else {
+                        RouteScope::Link
+                    },
+                })
+            })
+            .collect()
+    }
+}
+
+/// Serializes a route as the `ipv4.routes` `aau` tuple NetworkManager uses.
+fn route_v4_entry(route: &Route) -> Vec<u32> {
+    let destination = match route.destination {
+        IpAddr::V4(address) => address,
+        IpAddr::V6(_) => Ipv4Addr::UNSPECIFIED,
+    };
+    let next_hop = match route.gateway {
+        Some(IpAddr::V4(address)) => address,
+        _ => Ipv4Addr::UNSPECIFIED,
+    };
+    vec![
+        u32::from_le_bytes(destination.octets()),
+        u32::from(route.prefix_length),
+        u32::from_le_bytes(next_hop.octets()),
+        route.metric.unwrap_or(0),
+    ]
+}
+
+/// Serializes a route as the `ipv6.routes` `a(ayuayu)` tuple NetworkManager uses.
+fn route_v6_entry(route: &Route) -> (Vec<u8>, u32, Vec<u8>, u32) {
+    let destination = match route.destination {
+        IpAddr::V6(address) => address,
+        IpAddr::V4(_) => Ipv6Addr::UNSPECIFIED,
+    };
+    let next_hop = match route.gateway {
+        Some(IpAddr::V6(address)) => address,
+        _ => Ipv6Addr::UNSPECIFIED,
+    };
+    (
+        destination.octets().to_vec(),
+        u32::from(route.prefix_length),
+        next_hop.octets().to_vec(),
+        route.metric.unwrap_or(0),
+    )
+}
+
+fn val_v4_routes(routes: Vec<Vec<u32>>) -> OwnedValue {
+    OwnedValue::try_from(Value::from(routes)).expect("u32 route arrays convert to an owned value")
+}
+
+fn val_v6_routes(routes: Vec<(Vec<u8>, u32, Vec<u8>, u32)>) -> OwnedValue {
+    OwnedValue::try_from(Value::from(routes)).expect("route tuples convert to an owned value")
+}
+
 // --- Type and security mapping --------------------------------------------
 
 /// The `connection.type` string for a profile.
@@ -200,13 +336,13 @@ pub fn profile_to_settings(profile: &ConnectionProfile) -> SettingsDict {
         ConnectionType::Ethernet(_) => {}
     }
 
-    dict.insert("ipv4".to_string(), ip_config_section(&profile.ipv4));
-    dict.insert("ipv6".to_string(), ip_config_section(&profile.ipv6));
+    dict.insert("ipv4".to_string(), ip_config_section(&profile.ipv4, true));
+    dict.insert("ipv6".to_string(), ip_config_section(&profile.ipv6, false));
 
     dict
 }
 
-fn ip_config_section(config: &IpConfig) -> HashMap<String, OwnedValue> {
+fn ip_config_section(config: &IpConfig, expect_v4: bool) -> HashMap<String, OwnedValue> {
     let mut section = HashMap::new();
     let method = match config.method {
         IpMethod::Automatic => "auto",
@@ -237,6 +373,25 @@ fn ip_config_section(config: &IpConfig) -> HashMap<String, OwnedValue> {
                         .collect(),
                 ),
             );
+        }
+    }
+    if !config.routes.is_empty() {
+        if expect_v4 {
+            let routes = config
+                .routes
+                .iter()
+                .filter(|route| route.family == IpFamily::V4)
+                .map(route_v4_entry)
+                .collect();
+            section.insert("routes".to_string(), val_v4_routes(routes));
+        } else {
+            let routes = config
+                .routes
+                .iter()
+                .filter(|route| route.family == IpFamily::V6)
+                .map(route_v6_entry)
+                .collect();
+            section.insert("routes".to_string(), val_v6_routes(routes));
         }
     }
     section
@@ -354,6 +509,7 @@ fn parse_ip_config(
                 .collect();
         }
     }
+    config.routes = parse_routes(section, expect_v4)?;
     Ok(config)
 }
 
@@ -389,14 +545,14 @@ fn fnv1a(bytes: &[u8], mut hash: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use super::{profile_to_settings, settings_to_profile, stable_uuid};
     use crate::connection::profile::{
         ConnectionProfile, ConnectionType, IpConfig, IpMethod, WifiSecurity,
     };
     use crate::connection::secrets::SecretReference;
-    use crate::linux::model::Ssid;
+    use crate::linux::model::{IpFamily, Route, RouteKind, RouteScope, Ssid};
 
     fn open_profile(id: &str) -> ConnectionProfile {
         ConnectionProfile::wifi(
@@ -429,6 +585,7 @@ mod tests {
             prefix_length: Some(24),
             gateway: Some(IpAddr::from([192, 168, 1, 1])),
             dns_servers: vec![IpAddr::from([192, 168, 1, 1])],
+            routes: Vec::new(),
         };
 
         let dict = profile_to_settings(&profile);
@@ -512,6 +669,168 @@ mod tests {
             ..IpConfig::default()
         };
         let dict = profile_to_settings(&profile);
+        assert!(settings_to_profile(&dict).is_err());
+    }
+
+    fn static_v4_route(
+        destination: Ipv4Addr,
+        prefix_length: u8,
+        gateway: Option<Ipv4Addr>,
+        metric: Option<u32>,
+    ) -> Route {
+        Route {
+            family: IpFamily::V4,
+            destination: IpAddr::V4(destination),
+            prefix_length,
+            gateway: gateway.map(IpAddr::V4),
+            output_interface: None,
+            metric,
+            kind: RouteKind::Unicast,
+            scope: if prefix_length == 0 {
+                RouteScope::Universe
+            } else {
+                RouteScope::Link
+            },
+        }
+    }
+
+    fn static_v6_route(
+        destination: Ipv6Addr,
+        prefix_length: u8,
+        gateway: Option<Ipv6Addr>,
+        metric: Option<u32>,
+    ) -> Route {
+        Route {
+            family: IpFamily::V6,
+            destination: IpAddr::V6(destination),
+            prefix_length,
+            gateway: gateway.map(IpAddr::V6),
+            output_interface: None,
+            metric,
+            kind: RouteKind::Unicast,
+            scope: if prefix_length == 0 {
+                RouteScope::Universe
+            } else {
+                RouteScope::Link
+            },
+        }
+    }
+
+    #[test]
+    fn ipv4_routes_round_trip_through_the_settings_dict() {
+        let mut profile = open_profile("home");
+        profile.ipv4 = IpConfig {
+            method: IpMethod::Manual,
+            address: Some(IpAddr::from([10, 0, 0, 5])),
+            prefix_length: Some(24),
+            gateway: Some(IpAddr::from([10, 0, 0, 1])),
+            dns_servers: Vec::new(),
+            routes: vec![
+                static_v4_route(
+                    Ipv4Addr::new(10, 10, 0, 0),
+                    16,
+                    Some(Ipv4Addr::new(10, 0, 0, 1)),
+                    Some(100),
+                ),
+                static_v4_route(
+                    Ipv4Addr::new(172, 16, 0, 0),
+                    12,
+                    Some(Ipv4Addr::new(10, 0, 0, 1)),
+                    Some(200),
+                ),
+                static_v4_route(
+                    Ipv4Addr::new(0, 0, 0, 0),
+                    0,
+                    Some(Ipv4Addr::new(10, 0, 0, 1)),
+                    Some(50),
+                ),
+                static_v4_route(Ipv4Addr::new(10, 20, 0, 0), 24, None, None),
+            ],
+        };
+
+        let dict = profile_to_settings(&profile);
+        let decoded = settings_to_profile(&dict).unwrap();
+        assert_eq!(decoded.ipv4.routes, profile.ipv4.routes);
+    }
+
+    #[test]
+    fn ipv6_routes_round_trip_through_the_settings_dict() {
+        let mut profile = open_profile("home");
+        profile.ipv6 = IpConfig {
+            method: IpMethod::Manual,
+            address: Some("2001:db8:1::2".parse().unwrap()),
+            prefix_length: Some(64),
+            gateway: Some("2001:db8:1::1".parse().unwrap()),
+            dns_servers: Vec::new(),
+            routes: vec![
+                static_v6_route(
+                    "fd00::".parse().unwrap(),
+                    8,
+                    Some("2001:db8:1::1".parse().unwrap()),
+                    Some(100),
+                ),
+                static_v6_route(
+                    "2001:db8:10::".parse().unwrap(),
+                    64,
+                    Some("2001:db8:1::1".parse().unwrap()),
+                    Some(200),
+                ),
+                static_v6_route(
+                    "::".parse().unwrap(),
+                    0,
+                    Some("2001:db8:1::1".parse().unwrap()),
+                    Some(50),
+                ),
+                static_v6_route("fd11::".parse().unwrap(), 32, None, None),
+            ],
+        };
+
+        let dict = profile_to_settings(&profile);
+        let decoded = settings_to_profile(&dict).unwrap();
+        assert_eq!(decoded.ipv6.routes, profile.ipv6.routes);
+    }
+
+    #[test]
+    fn routes_of_the_wrong_family_are_dropped_from_the_section() {
+        let mut profile = open_profile("home");
+        profile.ipv4 = IpConfig {
+            method: IpMethod::Manual,
+            address: Some(IpAddr::from([10, 0, 0, 5])),
+            prefix_length: Some(24),
+            gateway: Some(IpAddr::from([10, 0, 0, 1])),
+            dns_servers: Vec::new(),
+            routes: vec![static_v6_route(
+                "fd00::".parse().unwrap(),
+                8,
+                Some("2001:db8:1::1".parse().unwrap()),
+                Some(100),
+            )],
+        };
+
+        let dict = profile_to_settings(&profile);
+        let decoded = settings_to_profile(&dict).unwrap();
+        assert!(
+            decoded.ipv4.routes.is_empty(),
+            "a v6 route in ipv4.routes must not survive the round trip"
+        );
+    }
+
+    #[test]
+    fn invalid_v4_route_prefixes_are_rejected() {
+        let mut profile = open_profile("home");
+        profile.ipv4 = IpConfig {
+            method: IpMethod::Manual,
+            address: Some(IpAddr::from([10, 0, 0, 5])),
+            prefix_length: Some(24),
+            gateway: Some(IpAddr::from([10, 0, 0, 1])),
+            dns_servers: Vec::new(),
+            routes: Vec::new(),
+        };
+        let mut dict = profile_to_settings(&profile);
+        dict.get_mut("ipv4").unwrap().insert(
+            "routes".to_string(),
+            super::val_v4_routes(vec![vec![0, 33, 0, 0]]),
+        );
         assert!(settings_to_profile(&dict).is_err());
     }
 }
